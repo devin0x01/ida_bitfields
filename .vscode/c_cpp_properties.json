@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:/Mysw/IDA/IDA Professional 9.0/sdk/include/**"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/**",
+                    "C:/Mysw/IDA/IDA Professional 9.0/sdk/**"
+                ]
+            },
+            "cppStandard": "c++20"
+        }
+    ],
+    "version": 4
+}

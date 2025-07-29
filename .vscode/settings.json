@@ -1,0 +1,7 @@
+{
+    "files.readonlyInclude": {
+        "C:/Mysw/IDA/IDA Professional 9.0/sdk/**": true
+    },
+    "files.readonlyExclude": {},
+    "cSpell.enabled": false,
+}
