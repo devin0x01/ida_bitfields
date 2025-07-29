@@ -4,12 +4,8 @@ project(ida_bitfields)
 
 include(FetchContent)
 
-FetchContent_Declare(
-  HexSuite
-  GIT_REPOSITORY https://github.com/can1357/hexsuite
-)
-
-FetchContent_MakeAvailable(HexSuite)
+# 指定本地 HexSuite 代码的路径
+set(HEXSUITE_LOCAL_PATH "./hexsuite")
 
 add_library(bitfields SHARED ${CMAKE_CURRENT_SOURCE_DIR}/plugin.cpp)
 
@@ -23,10 +19,12 @@ else()
     message(FATAL_ERROR "IDA_PATH or IDA_DIR environment variable must be set")
 endif()
 
+message(IDA_PATH: ENV{IDA_PATH})
+
 target_include_directories(bitfields SYSTEM PRIVATE 
-    ${hexsuite_SOURCE_DIR}
-    ${IDA_PATH}/sdk/include
-    ${IDA_PATH}/plugins/hexrays_sdk/include)
+    ${HEXSUITE_LOCAL_PATH}
+    "${IDA_PATH}/sdk/include"
+    "${IDA_PATH}/plugins/hexrays_sdk/include")
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     set(IDA_SDK_LIB_OS "win_vc")
@@ -54,6 +52,6 @@ endif()
 target_link_libraries(bitfields PRIVATE "ida.lib")
 target_link_directories(
     bitfields PRIVATE 
-        ${IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS}_pro
-        ${IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS}
+        "${IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS}_pro"
+        "${IDA_PATH}/sdk/lib/${IDA_SDK_LIB_ARCH}_${IDA_SDK_LIB_OS}_${IDA_SDK_LIB_BITS}"
 )

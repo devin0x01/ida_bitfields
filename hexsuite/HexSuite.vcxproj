@@ -106,9 +106,9 @@
   </ItemGroup>
   <ItemGroup>
     <Library Include="$(IDA_PATH)sdk\lib\x64_win_vc_64\ida.lib" />
-    <Library Include="$(IDA_PATH)sdk\lib\x64_win_vc_64\pro.lib" />
+    <Library Include="$(IDA_PATH)sdk\lib\x64_win_vc_64_s\pro.lib" />
     <Library Include="$(IDA_PATH)sdk\lib\x64_win_vc_64\network.lib" />
-    <Library Include="$(IDA_PATH)sdk\lib\x64_win_vc_64\compress.lib" />
+    <Library Include="$(IDA_PATH)sdk\lib\x64_win_vc_64_s\compress.lib" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
