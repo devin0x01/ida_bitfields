@@ -87,8 +87,17 @@ inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t o
 	data.flags = FTI_PURE;
 	data.rettype = member.size == 1 ? tinfo_t{ BTF_BOOL } : common_type;
 	data.cc = CM_CC_UNKNOWN;
-	data.push_back( funcarg_t{ "", info.underlying_expr->type } );
-	data.push_back( funcarg_t{ "", common_type } );
+
+	{
+		funcarg_t new_arg1;
+		new_arg1.type = info.underlying_expr->type;
+		funcarg_t new_arg2;
+		new_arg2.type = common_type;
+		data.push_back(new_arg1);
+		data.push_back(new_arg2);
+	// data.push_back( funcarg_t{ "", info.underlying_expr->type } );
+	// data.push_back( funcarg_t{ "", common_type } );
+	}
 
 	tinfo_t functype;
 	if ( !functype.create_func( data ) )
@@ -139,7 +148,8 @@ inline uint64_t bitfield_access_mask( udm_t& member )
 
 // executes callback for each member in `type` where its offset coincides with `and_mask`.
 // `cmp_mask` is used to calculate enabled bits in the bitfield.
-template<class Callback> bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t byte_offset = 0 )
+template<class Callback>
+bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t byte_offset = 0 )
 {
 	udm_t member;
 
@@ -187,7 +197,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 	{
 		// handle simple bitfield access with binary and of a mask.
 		// e.g. `x & 0x1`
-		if ( expr->op == cot_band )
+		if ( expr->op == cot_band ) // Bitwise-AND
 		{
 			auto num = expr->find_num_op();
 			if ( !num )
@@ -291,6 +301,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 	return res;
 }
 
+// e.g. if (((status & 0x2) >> 1) == 1) {}
 inline void handle_equality( cexpr_t* expr )
 {
 	auto [eq, eq_num] = normalize_binop( expr );
@@ -442,8 +453,13 @@ inline void handle_or_assignment( cexpr_t* expr )
 			data.rettype = tinfo_t{ BTF_VOID };
 			data.cc = CM_CC_UNKNOWN;
 			data.reserve( fields.size() + 1 );
-			for ( size_t i = 0; i < fields.size() + 1; ++i )
-				data.push_back( funcarg_t{ "", info.underlying_expr->type } );
+			for (size_t i = 0; i < fields.size() + 1; ++i)
+			{
+				funcarg_t arg;
+				arg.type = info.underlying_expr->type;
+				data.push_back(arg);
+				//data.push_back(funcarg_t{ "", info.underlying_expr->type });
+			}
 
 			tinfo_t functype;
 			if ( !functype.create_func( data ) )
@@ -577,15 +593,15 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
 			int idaapi visit_expr( cexpr_t* expr ) override
 			{
-				if ( expr->op == cot_eq || expr->op == cot_ne )
+				if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
 					handle_equality( expr );
-				else if ( expr-> op == cot_slt )
+				else if ( expr-> op == cot_slt ) // signed less than
 					handle_value_expr( expr );
-				else if ( expr->op == cot_call )
+				else if ( expr->op == cot_call ) // call a function: foo(a, b)
 					handle_call( expr );
-				else if ( expr->op == cot_asg )
+				else if ( expr->op == cot_asg ) // assign
 					handle_value_expr( expr->y );
-				else if ( expr->op == cot_asgbor )
+				else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
 					handle_or_assignment( expr );
 
 				return 0;
@@ -605,10 +621,13 @@ struct bitfields : plugmod_t
 	{
 		bitfields_optimizer.set_state( s );
 	}
+
+	// ctor
 	bitfields()
 	{
-		set_state( nn.altval( 0 ) == 0 );
+		set_state( nn.altval( 0 ) == 0 ); // enable when the altval is 0
 	}
+
 	~bitfields()
 	{
 		bitfields_optimizer.uninstall();
@@ -621,6 +640,9 @@ AUTOHIDE NONE
 bitfields plugin for Hex-Rays decompiler.
 State: %s)";
 		int code = ask_buttons( "~E~nable", "~D~isable", "~C~lose", -1, format + 1, nn.altval( 0 ) == 0 ? "Enabled" : "Disabled" );
+		//  0: click enable button
+		//  1: click disable button
+		// -1: click close button or close dialog
 		if ( code < 0 )
 			return true;
 		nn.altset( 0, code ? 0 : 1 );
