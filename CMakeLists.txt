@@ -49,6 +49,19 @@ else()
     set(IDA_SDK_LIB_BITS "32")
 endif()
 
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_COMMIT_ID
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE GIT_RESULT
+)
+
+if(GIT_RESULT EQUAL "0")
+    add_definitions(-DGIT_COMMIT_ID="${GIT_COMMIT_ID}")
+endif()
+
+
 target_link_libraries(bitfields PRIVATE "ida.lib")
 target_link_directories(
     bitfields PRIVATE 

@@ -1,5 +1,9 @@
 #include <hexsuite.hpp>
 
+#ifndef GIT_COMMIT_ID
+    #define GIT_COMMIT_ID "unknown"
+#endif
+
 #define DLOG(fmt, ...) msg("##### [bitfields] %s: " fmt "\n", __func__, ##__VA_ARGS__)
 
 qstring expr_to_string(cexpr_t* expr)
@@ -757,9 +761,9 @@ struct bitfields : plugmod_t
 
 	void set_state( bool s )
 	{
-		msg("\n******************************************************\n");
-		msg("             Plugin bitfields was %s             \n", (s ? "enabled" : "disabled"));
-		msg("******************************************************\n\n");
+		msg("*****************************************************************\n");
+		msg("      Plugin bitfields was %s: version 0.0.1 (%s)   \n", (s ? "enabled" : "disabled"), GIT_COMMIT_ID);
+		msg("*****************************************************************\n\n");
 		bitfields_optimizer.set_state( s );
 	}
 
