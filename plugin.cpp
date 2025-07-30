@@ -1,5 +1,113 @@
 #include <hexsuite.hpp>
 
+#define DLOG(fmt, ...) msg("##### [bitfields] %s: " fmt "\n", __func__, ##__VA_ARGS__)
+
+qstring expr_to_string(cexpr_t* expr)
+{
+    if (!expr) return "";
+    
+    qstring result;
+    
+    switch (expr->op) {
+        case cot_num:
+            result.sprnt("0x%X", expr->n->_value);
+            break;
+            
+        case cot_var:
+            {
+                lvar_t* lvar = &(expr->v.getv());
+                const char* var_name = lvar->name.c_str();
+                result.sprnt("%s", var_name ? var_name : "<unknown>");
+            }
+            break;
+        
+        case cot_obj:  // Object reference (global variable, function)
+            {
+                qstring out;
+                if (get_ea_name(&out, expr->obj_ea)) {
+                    result.sprnt("%s", out.c_str());
+                } else {
+                    result.sprnt("obj:0x%llX", expr->obj_ea);
+                }
+            }
+            break;
+            
+        case cot_ptr:  // Pointer dereference (*ptr)
+            result.sprnt("*%s", expr_to_string(expr->x).c_str());
+            break;
+
+        case cot_ref:  // Address-of operator (&var)
+            result.sprnt("&%s", expr_to_string(expr->x).c_str());
+            break;
+        
+        case cot_ne:  // Not equal comparison (!=)
+            result.sprnt("(%s != %s)", 
+                         expr_to_string(expr->x).c_str(), 
+                         expr_to_string(expr->y).c_str());
+            break;
+
+
+        case cot_band:
+            result.sprnt("(%s & %s)", 
+                         expr_to_string(expr->x).c_str(), 
+                         expr_to_string(expr->y).c_str());
+            break;
+
+        case cot_bor:  // Bitwise OR (|)
+            result.sprnt("(%s | %s)", 
+                         expr_to_string(expr->x).c_str(), 
+                         expr_to_string(expr->y).c_str());
+            break;
+            
+        case cot_sshr:
+        case cot_ushr:
+            result.sprnt("(%s >> %s)", 
+                         expr_to_string(expr->x).c_str(), 
+                         expr_to_string(expr->y).c_str());
+            break;
+            
+        case cot_add:
+            result.sprnt("(%s + %s)", 
+                         expr_to_string(expr->x).c_str(), 
+                         expr_to_string(expr->y).c_str());
+            break;
+
+        case cot_cast:  // Type cast
+            {
+                qstring type_str;
+				expr->type.print(&type_str);
+                // expr->type.get_nice_type_name(&type_str);
+                result.sprnt("(%s)%s", type_str.c_str(), expr_to_string(expr->x).c_str());
+            }
+            break;
+            
+        case cot_call:  // Function call
+            {
+                qstring func_str = expr_to_string(expr->x); // Function address
+                
+                // Format arguments
+                qstring args_str;
+                carglist_t* args = expr->a;
+                for (int i = 0; i < args->size(); i++) {
+                    if (i > 0) args_str.append(", ");
+                    args_str.append(expr_to_string(&(args->at(i))));
+                }
+                
+                result.sprnt("%s(%s)", func_str.c_str(), args_str.c_str());
+            }
+            break;
+        case cot_helper:  // Helper function (e.g., __builtin_*)
+            result.sprnt("%s", expr->helper);
+            break;
+
+        default:
+            result.sprnt("<%s:unknownop>", get_ctype_name(expr->op));
+            break;
+    }
+    
+    return result;
+}
+
 struct access_info
 {
 	cexpr_t* underlying_expr = nullptr;
@@ -10,6 +118,14 @@ struct access_info
 
 	tinfo_t& type() const { return underlying_expr->type; }
 	explicit operator bool() const { return underlying_expr != nullptr; }
+
+	qstring to_string() const
+	{
+		qstring result;
+		result.sprnt("access_info: expr=%s, mask=0x%llX, ea=0x%llX, byte_offset=%llu, shift_value=%u",
+		             expr_to_string(underlying_expr).c_str(), mask, ea, byte_offset, shift_value);
+		return result;
+	}
 };
 
 // makes sure that the immediate / cot_num is on the right hand side
@@ -24,6 +140,7 @@ inline void replace_or_delete( cexpr_t* expr, cexpr_t* replacement, bool success
 	if ( !replacement )
 		return;
 
+	DLOG("  replace expr %s to %s, success=%d", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str(), success);
 	if ( success )
 		expr->replace_by( replacement );
 	else
@@ -151,6 +268,10 @@ inline uint64_t bitfield_access_mask( udm_t& member )
 template<class Callback>
 bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t byte_offset = 0 )
 {
+    qstring type_name;
+    type.print(&type_name);
+    DLOG("type=%s, and_mask=0x%X, byte_offset=%d", type_name.c_str(), and_mask, byte_offset);
+
 	udm_t member;
 
 	if ( type.is_ptr() )
@@ -171,6 +292,9 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
 
 		if ( member.offset != real_offset )
 			continue;
+
+        DLOG("  type=%s, member=%s, member_size=%d, member_offset=%d, cur_offset=%d", type_name.c_str(),
+            member.name.c_str(), member.size, member.offset, real_offset);
 
 		uint64_t mask = bitfield_access_mask( member );
 		if ( member.size != 1 && ( and_mask & mask ) != mask )
@@ -197,6 +321,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 	{
 		// handle simple bitfield access with binary and of a mask.
 		// e.g. `x & 0x1`
+		DLOG("    op=%s, expr=%s", get_ctype_name(expr->op), expr_to_string(expr).c_str());
 		if ( expr->op == cot_band ) // Bitwise-AND
 		{
 			auto num = expr->find_num_op();
@@ -304,10 +429,12 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 // e.g. if (((status & 0x2) >> 1) == 1) {}
 inline void handle_equality( cexpr_t* expr )
 {
+	DLOG("origin expr: %s", expr_to_string(expr).c_str());
 	auto [eq, eq_num] = normalize_binop( expr );
 	if ( eq_num->op != cot_num )
 		return;
 
+	DLOG("  eq=%s, eq_num=%s", expr_to_string(eq).c_str(), expr_to_string(eq_num).c_str());
 	auto info = unwrap_access( eq );
 	if ( !info )
 		return;
@@ -358,9 +485,15 @@ inline void handle_equality( cexpr_t* expr )
 
 inline void handle_value_expr( cexpr_t* access )
 {
+	DLOG("origin expr: %s", expr_to_string(access).c_str());
 	auto info = unwrap_access( access );
 	if ( !info )
+	{
+		DLOG("  unwrap_access failed: %s", expr_to_string(access).c_str());
 		return;
+	}
+
+	DLOG("  unwrap done, access info: %s", info.to_string().c_str());
 
 	cexpr_t* replacement = nullptr;
 	auto success = for_each_bitfield(
@@ -377,6 +510,7 @@ inline void handle_value_expr( cexpr_t* access )
 
 inline void handle_assignment( cexpr_t* expr )
 {
+	DLOG("");
 	auto rhs = expr->y;
 	auto info = unwrap_access( rhs );
 	if ( !info )
@@ -398,6 +532,7 @@ inline void handle_assignment( cexpr_t* expr )
 // match |=
 inline void handle_or_assignment( cexpr_t* expr )
 {
+	DLOG("");
 	// second arg has to be a number
 	auto& num = *expr->y;
 	if ( num.op != cot_num )
@@ -509,6 +644,7 @@ inline void handle_or_assignment( cexpr_t* expr )
 // match special bit functions
 inline void handle_call( cexpr_t* expr )
 {
+	DLOG("");
 	constexpr static size_t num_bitmask_funcs = 8;
 	constexpr static std::string_view functions[] = {
 		// bit mask functions
@@ -586,6 +722,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 	{
 		if ( maturity != CMAT_FINAL )
 			return 0;
+		msg("============================================================= bitfields start\n");
 
 		struct visitor : ctree_visitor_t
 		{
@@ -595,14 +732,14 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 			{
 				if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
 					handle_equality( expr );
-				else if ( expr-> op == cot_slt ) // signed less than
-					handle_value_expr( expr );
-				else if ( expr->op == cot_call ) // call a function: foo(a, b)
-					handle_call( expr );
+				// else if ( expr-> op == cot_slt ) // signed less than
+					// handle_value_expr( expr );
+				// else if ( expr->op == cot_call ) // call a function: foo(a, b)
+				// 	handle_call( expr );
 				else if ( expr->op == cot_asg ) // assign
 					handle_value_expr( expr->y );
-				else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
-					handle_or_assignment( expr );
+				// else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
+				// 	handle_or_assignment( expr );
 
 				return 0;
 			}
@@ -610,6 +747,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
 		visitor{}.apply_to( &cfunc->body, nullptr );
 
+		msg("============================================================= bitfields end\n");
 		return 0;
 	} );
 
@@ -619,6 +757,9 @@ struct bitfields : plugmod_t
 
 	void set_state( bool s )
 	{
+		msg("\n******************************************************\n");
+		msg("             Plugin bitfields was %s             \n", (s ? "enabled" : "disabled"));
+		msg("******************************************************\n\n");
 		bitfields_optimizer.set_state( s );
 	}
 
