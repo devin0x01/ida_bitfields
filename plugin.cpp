@@ -270,11 +270,11 @@ inline uint64_t bitfield_access_mask( udm_t& member )
 // executes callback for each member in `type` where its offset coincides with `and_mask`.
 // `cmp_mask` is used to calculate enabled bits in the bitfield.
 template<class Callback>
-bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t byte_offset = 0 )
+bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t byte_offset = 0 , uint8_t shift_value = 0 )
 {
     qstring type_name;
     type.print(&type_name);
-    DLOG("type=%s, and_mask=0x%X, byte_offset=%d", type_name.c_str(), and_mask, byte_offset);
+    DLOG("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", type_name.c_str(), and_mask, byte_offset, shift_value);
 
 	udm_t member;
 
@@ -283,10 +283,10 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
 
 	for ( size_t i = 0; i < 64; ++i )
 	{
-		if ( !( and_mask & ( 1ull << i ) ) )
+		if ( !( and_mask & ( 1ull << (i + shift_value) ) ) )
 			continue;
 
-		const auto real_offset = i + ( byte_offset * CHAR_BIT );
+		const auto real_offset = (i + shift_value) + ( byte_offset * CHAR_BIT );
 		member.offset = real_offset;
 		if ( type.find_udm( &member, STRMEM_OFFSET ) == -1 )
 			continue;
@@ -297,7 +297,7 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
 		if ( member.offset != real_offset )
 			continue;
 
-        DLOG("  type=%s, member=%s, member_size=%d, member_offset=%d, cur_offset=%d", type_name.c_str(),
+        DLOG("  find member, type=%s, member=%s, member_size=%d, member_offset=%d, cur_offset=%d", type_name.c_str(),
             member.name.c_str(), member.size, member.offset, real_offset);
 
 		uint64_t mask = bitfield_access_mask( member );
@@ -317,6 +317,7 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
 // * *(type*)&x & imm
 // * HIDWORD(*(type*)&x)
 // * *((DWORD*)expr + imm) & imm == imm
+// * *((type*)ptr + offset) >> shift
 inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 {
 	access_info res{};
@@ -381,9 +382,27 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 			res.mask = 1 << ( ( expr->type.get_size() * CHAR_BIT ) - 1 );
 			res.shift_value = 0;
 		}
+		else if (expr->op == cot_ushr)
+		{
+			// handle right shift of a pointer dereference
+			// e.g. `*((type *)var + 8) >> 6`
+			auto shiftnum = expr->find_num_op();
+			if ( !shiftnum )
+				return res;
+
+			expr = expr->theother( shiftnum );
+			
+			// Set mask based on the actual type size after dereference
+			// For char*: mask = 0xFF, for short*: mask = 0xFFFF, etc.
+			const auto type_size_bits = expr->type.get_size() * CHAR_BIT;
+			res.mask = (1ull << type_size_bits) - 1;
+			res.shift_value = ( uint8_t ) shiftnum->n->_value;
+		}
 		else
 			return res;
 
+		DLOG("  next expr=%s, mask=0x%llX, byte_offset=%u, shift_value=%u", expr_to_string(expr).c_str(),
+			res.mask, res.byte_offset, res.shift_value);
 		if ( expr->op == cot_ushr )
 		{
 			auto shiftnum = expr->find_num_op();
@@ -415,11 +434,13 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 
 	if ( expr->x->op == cot_cast && expr->x->x->op == cot_ref )
 	{
+		DLOG("  handling cast+ref pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
 		res.underlying_expr = expr->x->x->x;
 		res.ea = extract_topmost_ea_level2( expr );
 	}
 	else if ( expr->x->type.is_ptr() && ( expr->x->op == cot_add && expr->x->y->op == cot_num ) && expr->x->x->op == cot_cast )
 	{
+		DLOG("  handling cast+add pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
 		const auto* num = expr->x->y;
 		res.byte_offset = expr->type.get_size() * num->n->_value;
 
@@ -507,7 +528,7 @@ inline void handle_value_expr( cexpr_t* access )
 			// that would contain the correctly masked and shifted fields
 			const auto access = create_bitfield_access( info, member, info.ea, info.type() );
 			merge_accesses( replacement, access, cot_bor, info.ea, info.type() );
-		}, info.underlying_expr->type, info.mask, info.byte_offset );
+		}, info.underlying_expr->type, info.mask, info.byte_offset , info.shift_value);
 
 	replace_or_delete( access, replacement, success );
 }
