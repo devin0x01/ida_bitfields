@@ -5,3 +5,4 @@ build/
 *.vcxproj.user
 *.vcxproj.filters
 compile_commands.json
+patch/
