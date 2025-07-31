@@ -4,7 +4,14 @@
     #define GIT_COMMIT_ID "unknown"
 #endif
 
-#define DLOG(fmt, ...) msg("##### [bitfields] %s: " fmt "\n", __func__, ##__VA_ARGS__)
+#ifdef _DEBUG
+    #pragma message("================== build in debug mode")
+    #define DLOG(fmt, ...) msg("##### [bitfields] %s: " fmt "\n", __func__, ##__VA_ARGS__)
+#else
+    #pragma message("================== build in release mode")
+    #define DLOG(fmt, ...)
+#endif
+
 
 qstring expr_to_string(cexpr_t* expr)
 {
@@ -803,7 +810,7 @@ struct bitfields : plugmod_t
 	{
 		constexpr const char* format = R"(
 AUTOHIDE NONE
-bitfields plugin for Hex-Rays decompiler.
+bitfields plugin for Hex-Rays decompiler (v0.0.1).
 State: %s)";
 		int code = ask_buttons( "~E~nable", "~D~isable", "~C~lose", -1, format + 1, nn.altval( 0 ) == 0 ? "Enabled" : "Disabled" );
 		//  0: click enable button
