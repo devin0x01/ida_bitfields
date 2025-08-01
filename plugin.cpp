@@ -12,6 +12,21 @@
     #define DLOG(fmt, ...)
 #endif
 
+qstring print_expr_type(cexpr_t* expr)
+{
+    if (!expr) return "[null_expr]";
+
+    qstring type_str;
+    expr->type.print(&type_str);
+    return type_str;
+}
+
+qstring print_type_name(const tinfo_t& type)
+{
+    qstring type_name;
+    type.print(&type_name);
+    return type_name;
+}
 
 qstring expr_to_string(cexpr_t* expr)
 {
@@ -28,7 +43,7 @@ qstring expr_to_string(cexpr_t* expr)
             {
                 lvar_t* lvar = &(expr->v.getv());
                 const char* var_name = lvar->name.c_str();
-                result.sprnt("%s", var_name ? var_name : "<unknown>");
+                result.sprnt("var:%s", var_name ? var_name : "<unknown>");
             }
             break;
         
@@ -76,6 +91,12 @@ qstring expr_to_string(cexpr_t* expr)
                          expr_to_string(expr->x).c_str(), 
                          expr_to_string(expr->y).c_str());
             break;
+
+        case cot_shl:
+            result.sprnt("(%s << %s)", 
+                         expr_to_string(expr->x).c_str(), 
+                         expr_to_string(expr->y).c_str());
+            break;
             
         case cot_add:
             result.sprnt("(%s + %s)", 
@@ -85,11 +106,15 @@ qstring expr_to_string(cexpr_t* expr)
 
         case cot_cast:  // Type cast
             {
-                qstring type_str;
-                expr->type.print(&type_str);
                 // expr->type.get_nice_type_name(&type_str);
-                result.sprnt("(%s)%s", type_str.c_str(), expr_to_string(expr->x).c_str());
+                result.sprnt("(%s)%s", print_expr_type(expr).c_str(), expr_to_string(expr->x).c_str());
             }
+            break;
+        
+        case cot_asg:  // Assignment (=)
+            result.sprnt("%s = %s", 
+                         expr_to_string(expr->x).c_str(), 
+                         expr_to_string(expr->y).c_str());
             break;
             
         case cot_call:  // Function call
@@ -107,6 +132,7 @@ qstring expr_to_string(cexpr_t* expr)
                 result.sprnt("%s(%s)", func_str.c_str(), args_str.c_str());
             }
             break;
+
         case cot_helper:  // Helper function (e.g., __builtin_*)
             result.sprnt("%s", expr->helper);
             break;
@@ -279,38 +305,44 @@ inline uint64_t bitfield_access_mask( udm_t& member )
 template<class Callback>
 bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t byte_offset = 0 , uint8_t shift_value = 0 )
 {
-    qstring type_name;
-    type.print(&type_name);
-    DLOG("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", type_name.c_str(), and_mask, byte_offset, shift_value);
-
-    udm_t member;
+    DLOG("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(), and_mask, byte_offset, shift_value);
 
     if ( type.is_ptr() )
-            type = type.get_ptrarr_object();
-
-    for ( size_t i = 0; i < 64; ++i )
     {
-        if ( !( and_mask & ( 1ull << (i + shift_value) ) ) )
+        type = type.get_ptrarr_object();
+    }
+
+    udm_t member;
+    uint64_t real_and_mask = (and_mask << shift_value);
+    for ( uint8_t i = 0; i < 64; ++i )
+    {
+        if ( !( real_and_mask & ( 1ull << i ) ) )
             continue;
 
-        const auto real_offset = (i + shift_value) + ( byte_offset * CHAR_BIT );
+        const auto real_offset = i + ( byte_offset * CHAR_BIT );
         member.offset = real_offset;
+
+        DLOG("  checking member at offset %d.%d", byte_offset, i);
         if ( type.find_udm( &member, STRMEM_OFFSET ) == -1 )
             continue;
 
+        DLOG("  found member at offset %d.%d, type=%s, size=%d", byte_offset, i, print_type_name(type).c_str(), member.size);
         if ( !member.is_bitfield() )
             continue;
 
+        DLOG("  checking member %s at offset %d.%d, member_offset=%d, size=%d", member.name.c_str(), byte_offset, i, member.offset, member.size);
         if ( member.offset != real_offset )
             continue;
 
-        DLOG("  find member, type=%s, member=%s, member_size=%d, member_offset=%d, cur_offset=%d", type_name.c_str(),
-            member.name.c_str(), member.size, member.offset, real_offset);
+        DLOG("  find member, type=%s, member=%s, member_size=%d, member_offset=%d", print_type_name(type).c_str(),
+            member.name.c_str(), member.size, member.offset);
 
         uint64_t mask = bitfield_access_mask( member );
-        if ( member.size != 1 && ( and_mask & mask ) != mask )
+        uint64_t temp_mask = (real_and_mask << (byte_offset * CHAR_BIT));
+        if ( member.size != 1 && ( temp_mask & mask ) != mask )
         {
-            msg( "[bitfields] bad offset (%ull) and size (%ull) combo of a field for given mask (%ull)\n", member.offset, member.size, and_mask );
+            msg( "[bitfields] bad offset (%u) and size (%u) mask (0x%X) combo of a field for given mask (0x%X)\n",
+                member.offset, member.size, mask, temp_mask );
             return false;
         }
 
@@ -333,7 +365,8 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
     {
         // handle simple bitfield access with binary and of a mask.
         // e.g. `x & 0x1`
-        DLOG("    op=%s, expr=%s", get_ctype_name(expr->op), expr_to_string(expr).c_str());
+        DLOG("  op=%s, expr=%s", get_ctype_name(expr->op), expr_to_string(expr).c_str());
+
         if ( expr->op == cot_band ) // Bitwise-AND
         {
             auto num = expr->find_num_op();
@@ -343,6 +376,16 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             res.mask = num->n->_value;
             res.shift_value = 0;
             expr = expr->theother( num );
+
+            if (expr->op == cot_ushr )
+            {
+                auto shiftnum = expr->find_num_op();
+                if ( !shiftnum )
+                    return res;
+
+                expr = expr->theother( shiftnum );
+                res.shift_value = (uint8_t) shiftnum->n->_value;
+            }
         }
         // handle special IDA macros that mask off words.
         // e.g. `LOBYTE(x)`
@@ -406,26 +449,31 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             res.shift_value = ( uint8_t ) shiftnum->n->_value;
         }
         else
-            return res;
-
-        DLOG("  next expr=%s, mask=0x%llX, byte_offset=%u, shift_value=%u", expr_to_string(expr).c_str(),
-            res.mask, res.byte_offset, res.shift_value);
-        if ( expr->op == cot_ushr )
         {
-            auto shiftnum = expr->find_num_op();
-            if ( !shiftnum )
-                return res;
-
-            expr = expr->theother( shiftnum );
-            if ( res.shift_value == 0 )
-                res.mask <<= shiftnum->n->_value;
-
-            res.shift_value += ( uint8_t ) shiftnum->n->_value;
+            return res;
         }
+
+        // DLOG("  next expr=%s, type=%s, mask=0x%llX, byte_offset=%u, shift_value=%u", expr_to_string(expr).c_str(),
+        //     get_ctype_name(expr->op), res.mask, res.byte_offset, res.shift_value);
+
+        // if ( expr->op == cot_ushr )
+        // {
+        //     auto shiftnum = expr->find_num_op();
+        //     if ( !shiftnum )
+        //         return res;
+
+        //     expr = expr->theother( shiftnum );
+        //     if ( res.shift_value == 0 )
+        //         res.mask <<= shiftnum->n->_value;
+
+        //     res.shift_value += ( uint8_t ) shiftnum->n->_value;
+        // }
     }
 
     if ( expr->op != cot_ptr )
+    {
         return res;
+    }
 
     constexpr auto extract_topmost_ea_level2 = []( cexpr_t* expr ) -> ea_t {
         // extract the ea from one of the expression parts for union selection to work
@@ -762,16 +810,33 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
             int idaapi visit_expr( cexpr_t* expr ) override
             {
+                return visit_expr_internal( expr );
+            }
+
+            int idaapi visit_expr_internal( cexpr_t* expr )
+            {
                 if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
-                    handle_equality( expr );
-                // else if ( expr-> op == cot_slt ) // signed less than
+                {
+                    DLOG("------------------ eq/ne ------------------");
+                    handle_equality(expr);
+                }
+                else if ( expr-> op == cot_slt ) // signed less than
+                {
                     // handle_value_expr( expr );
-                // else if ( expr->op == cot_call ) // call a function: foo(a, b)
-                // 	handle_call( expr );
+                }
+                else if ( expr->op == cot_call ) // call a function
+                {
+                    // handle_call( expr );
+                }
                 else if ( expr->op == cot_asg ) // assign
-                    handle_value_expr( expr->y );
-                // else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
-                // 	handle_or_assignment( expr );
+                {
+                    DLOG("------------------ assign ------------------");
+                    handle_value_expr(expr->y);
+                }
+                else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
+                {
+                    // handle_or_assignment( expr );
+                }
 
                 return 0;
             }

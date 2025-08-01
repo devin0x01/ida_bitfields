@@ -59,6 +59,8 @@ execute_process(
 
 if(GIT_RESULT EQUAL "0")
     add_definitions(-DGIT_COMMIT_ID="${GIT_COMMIT_ID}")
+else()
+    add_definitions(-DGIT_COMMIT_ID="unknown")
 endif()
 
 
