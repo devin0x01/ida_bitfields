@@ -1,5 +1,6 @@
 #include <hexsuite.hpp>
 
+#define PLUGIN_VERSION "0.0.2"
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
 #endif
@@ -12,7 +13,7 @@
     #define DLOG(fmt, ...)
 #endif
 
-qstring print_expr_type(cexpr_t* expr)
+qstring print_expr_type(const cexpr_t* expr)
 {
     if (!expr) return "[null_expr]";
 
@@ -28,7 +29,7 @@ qstring print_type_name(const tinfo_t& type)
     return type_name;
 }
 
-qstring expr_to_string(cexpr_t* expr)
+qstring expr_to_string(const cexpr_t* expr)
 {
     if (!expr) return "";
     
@@ -588,6 +589,60 @@ inline void handle_value_expr( cexpr_t* access )
     replace_or_delete( access, replacement, success );
 }
 
+inline void handle_left_shifted_expr( cexpr_t* expr )
+{
+    DLOG("origin expr: %s", expr_to_string(expr).c_str());
+    
+    // expr is a left shift: expr->x << expr->y
+    // We need to check if expr->x is a bitfield access pattern
+    auto info = unwrap_access( expr->x );
+    if ( !info )
+    {
+        DLOG("  unwrap_access failed for shifted expression");
+        return;
+    }
+
+    // Get the left shift amount
+    if ( expr->y->op != cot_num )
+    {
+        DLOG("  shift amount is not a constant");
+        return;
+    }
+    
+    uint64_t left_shift_amount = expr->y->n->_value;
+    DLOG("  shift amount: 0x%X", left_shift_amount);
+
+    cexpr_t* replacement = nullptr;
+    auto success = for_each_bitfield(
+        [ &, left_shift_amount ] ( udm_t& member )
+        {
+            // Create the bitfield access
+            const auto access = create_bitfield_access( info, member, info.ea, expr->type );
+            if ( !access )
+                return;
+            
+            // Create the shift operation on the bitfield access
+            auto left_shift_num = new cnumber_t();
+            left_shift_num->assign( left_shift_amount, expr->y->type.get_size(), expr->y->type.is_signed() ? type_signed : type_unsigned );
+            
+            auto shift_expr = new cexpr_t();
+            shift_expr->op = cot_num;
+            shift_expr->type = expr->y->type;
+            shift_expr->n = left_shift_num;
+            shift_expr->exflags = 0;
+            shift_expr->ea = expr->y->ea;
+            
+            auto shifted_access = new cexpr_t( cot_shl, access, shift_expr );
+            shifted_access->type = expr->type;
+            shifted_access->exflags = 0;
+            shifted_access->ea = expr->ea;
+            
+            merge_accesses( replacement, shifted_access, cot_bor, expr->ea, expr->type );
+        }, info.underlying_expr->type, info.mask, info.byte_offset, info.shift_value);
+
+    replace_or_delete( expr, replacement, success );
+}
+
 inline void handle_assignment( cexpr_t* expr )
 {
     DLOG("");
@@ -837,6 +892,11 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                 {
                     // handle_or_assignment( expr );
                 }
+                else if ( expr->op == cot_shl ) // left shift: x << y
+                {
+                    DLOG("------------------ left shift ------------------");
+                    handle_left_shifted_expr( expr );
+                }
 
                 return 0;
             }
@@ -855,7 +915,7 @@ struct bitfields : plugmod_t
     void set_state( bool s )
     {
         msg("*****************************************************************\n");
-        msg("      Plugin bitfields was %s: version 0.0.1 (%s)   \n", (s ? "enabled" : "disabled"), GIT_COMMIT_ID);
+        msg("      Plugin bitfields was %s: version %s (%s)   \n", (s ? "enabled" : "disabled"), PLUGIN_VERSION, GIT_COMMIT_ID);
         msg("*****************************************************************\n\n");
         bitfields_optimizer.set_state( s );
     }
@@ -875,9 +935,9 @@ struct bitfields : plugmod_t
     {
         constexpr const char* format = R"(
 AUTOHIDE NONE
-bitfields plugin for Hex-Rays decompiler (v0.0.1).
+bitfields plugin for Hex-Rays decompiler (%s).
 State: %s)";
-        int code = ask_buttons( "~E~nable", "~D~isable", "~C~lose", -1, format + 1, nn.altval( 0 ) == 0 ? "Enabled" : "Disabled" );
+        int code = ask_buttons( "~E~nable", "~D~isable", "~C~lose", -1, format + 1, PLUGIN_VERSION, (nn.altval( 0 ) == 0 ? "Enabled" : "Disabled" ));
         //  0: click enable button
         //  1: click disable button
         // -1: click close button or close dialog
