@@ -602,37 +602,54 @@ inline void handle_left_shifted_expr( cexpr_t* expr )
         return;
     }
 
-    // Get the left shift amount
-    if ( expr->y->op != cot_num )
-    {
-        DLOG("  shift amount is not a constant");
-        return;
-    }
+    // Get the left shift amount - support both constants and variables
+    DLOG("  shift operand type: %s", get_ctype_name(expr->y->op));
     
-    uint64_t left_shift_amount = expr->y->n->_value;
-    DLOG("  shift amount: 0x%X", left_shift_amount);
+    bool is_constant_shift = (expr->y->op == cot_num);
+    uint64_t left_shift_amount = 0;
+    
+    if (is_constant_shift) 
+    {
+        left_shift_amount = expr->y->n->_value;
+        DLOG("  constant shift amount: 0x%X", left_shift_amount);
+    }
+    else
+    {
+        DLOG("  variable shift amount: %s", expr_to_string(expr->y).c_str());
+    }
 
     cexpr_t* replacement = nullptr;
     auto success = for_each_bitfield(
-        [ &, left_shift_amount ] ( udm_t& member )
+        [ &, is_constant_shift, left_shift_amount ] ( udm_t& member )
         {
             // Create the bitfield access
             const auto access = create_bitfield_access( info, member, info.ea, expr->type );
             if ( !access )
                 return;
             
-            // Create the shift operation on the bitfield access
-            auto left_shift_num = new cnumber_t();
-            left_shift_num->assign( left_shift_amount, expr->y->type.get_size(), expr->y->type.is_signed() ? type_signed : type_unsigned );
+            cexpr_t* shift_operand = nullptr;
             
-            auto shift_expr = new cexpr_t();
-            shift_expr->op = cot_num;
-            shift_expr->type = expr->y->type;
-            shift_expr->n = left_shift_num;
-            shift_expr->exflags = 0;
-            shift_expr->ea = expr->y->ea;
+            if (is_constant_shift)
+            {
+                // Create constant shift operand
+                auto left_shift_num = new cnumber_t();
+                left_shift_num->assign( left_shift_amount, expr->y->type.get_size(), expr->y->type.is_signed() ? type_signed : type_unsigned );
+                
+                shift_operand = new cexpr_t();
+                shift_operand->op = cot_num;
+                shift_operand->type = expr->y->type;
+                shift_operand->n = left_shift_num;
+                shift_operand->exflags = 0;
+                shift_operand->ea = expr->y->ea;
+            }
+            else
+            {
+                // Use the variable shift operand directly
+                shift_operand = new cexpr_t();
+                *shift_operand = *expr->y;  // Copy the variable expression
+            }
             
-            auto shifted_access = new cexpr_t( cot_shl, access, shift_expr );
+            auto shifted_access = new cexpr_t( cot_shl, access, shift_operand );
             shifted_access->type = expr->type;
             shifted_access->exflags = 0;
             shifted_access->ea = expr->ea;
