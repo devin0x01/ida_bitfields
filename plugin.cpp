@@ -47,19 +47,11 @@
 #define LOG_T(fmt, ...)   LOG(LOG_LEVEL_TRACE, fmt, ##__VA_ARGS__)
 
 
-qstring print_expr_type(const cexpr_t* expr)
-{
-    if (!expr) return "?expr_type?";
-
-    qstring type_str;
-    expr->type.print(&type_str);
-    return type_str;
-}
-
 qstring print_type_name(const tinfo_t& type)
 {
     qstring type_name;
     type.print(&type_name);
+    // type.get_nice_type_name(&type_name);
     return type_name;
 }
 
@@ -104,6 +96,32 @@ qstring expr_to_string(const cexpr_t* expr)
             result.sprnt("&%s", expr_to_string(expr->x).c_str());
             break;
         
+        case cot_idx:
+            result.sprnt("%s[%s]", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
+            break;
+
+        case cot_memref:
+            {
+                qstring member_name = "<member>";
+                udm_t member;
+                member.offset = expr->m;
+                if (expr->type.find_udm(&member, STRMEM_INDEX) != -1)
+                    member_name = member.name.c_str();
+                result.sprnt("%s.%s", expr_to_string(expr->x).c_str(), member_name.c_str());
+            }
+            break;
+
+        case cot_memptr:
+            {
+                qstring member_name = "<member>";
+                udm_t member;
+                member.offset = expr->m;
+                if (expr->type.find_udm(&member, STRMEM_INDEX) != -1)
+                    member_name = member.name.c_str();
+                result.sprnt("%s->%s", expr_to_string(expr->x).c_str(), member_name.c_str());
+            }
+            break;
+
         case cot_ne:  // Not equal comparison (!=)
             result.sprnt("(%s != %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
@@ -132,8 +150,7 @@ qstring expr_to_string(const cexpr_t* expr)
 
         case cot_cast:  // Type cast
             {
-                // expr->type.get_nice_type_name(&type_str);
-                result.sprnt("(%s)%s", print_expr_type(expr).c_str(), expr_to_string(expr->x).c_str());
+                result.sprnt("(%s)%s", (expr ? print_type_name(expr->type).c_str() : "UnknownType"), expr_to_string(expr->x).c_str());
             }
             break;
         
@@ -210,7 +227,7 @@ inline void replace_or_delete( cexpr_t* expr, cexpr_t* replacement, bool success
     if ( !replacement )
         return;
 
-    LOG_I("  replace expr %s to %s, success=%d", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str(), success);
+    LOG_I("######## replace expr %s to %s, success=%d", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str(), success);
     if ( success )
         expr->replace_by( replacement );
     else
@@ -270,6 +287,8 @@ inline void select_first_union_field( cexpr_t*& expr )
 
 inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t original_ea, tinfo_t& common_type )
 {
+    LOG_D("%s, member=%s, common_type=%s", info.to_string().c_str(), member.name.c_str(), print_type_name(common_type).c_str());
+
     func_type_data_t data;
     data.flags = FTI_PURE;
     data.rettype = member.size == 1 ? tinfo_t{ BTF_BOOL } : common_type;
@@ -293,6 +312,8 @@ inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t o
         return nullptr;
     }
 
+    LOG_T("  created functype=%s", print_type_name(functype).c_str());
+
     // construct the callable
     auto call_fn = new cexpr_t();
     call_fn->op = cot_helper;
@@ -312,7 +333,7 @@ inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t o
     auto& arg1 = ( *call_args )[ 1 ];
     arg1.op = cot_helper;
     arg1.type = common_type;
-    arg1.exflags = EXFL_ALONE;
+    arg1.exflags = EXFL_ALONE; // 表明是纯粹的标识符，不需要外部解析
     arg1.helper = alloc_cstr( member.name.c_str() );
 
     // construct the call / access itself
@@ -401,12 +422,12 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 
     qstring origin_expr_str;
     origin_expr_str.sprnt("op=%s, expr=%s", get_ctype_name(expr->op), expr_to_string(expr).c_str());
+    LOG_D("%s, is_assignee=%d", origin_expr_str.c_str(), is_assignee);
 
     if ( !is_assignee )
     {
         // handle simple bitfield access with binary and of a mask.
         // e.g. `x & 0x1`
-        LOG_D("  %s", origin_expr_str.c_str());
 
         if ( expr->op == cot_band ) // Bitwise-AND
         {
@@ -419,7 +440,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             expr = expr->theother( num );
             if (!expr)
             {
-                LOG_E("parse failed 1 for %s", origin_expr_str.c_str());
+                LOG_E("parse failed for %s", origin_expr_str.c_str());
                 return res;
             }
 
@@ -428,7 +449,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
                 auto shiftnum = expr->find_num_op();
                 if ( !shiftnum )
                 {
-                    LOG_E("parse failed 2 for %s", origin_expr_str.c_str());
+                    LOG_D("cannot get shiftnum %s", origin_expr_str.c_str());
                     return res;
                 }
 
@@ -488,7 +509,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             auto shiftnum = expr->find_num_op();
             if ( !shiftnum )
             {
-                LOG_E("parse failed 3 for %s", origin_expr_str.c_str());
+                LOG_D("cannot get shiftnum for %s", origin_expr_str.c_str());
                 return res;
             }
 
@@ -583,7 +604,13 @@ inline void handle_equality( cexpr_t* expr )
 
     LOG_D("origin expr: %s", expr_to_string(expr).c_str());
     auto [eq, eq_num] = normalize_binop( expr );
-    if ( !eq_num || eq_num->op != cot_num )
+    if (!eq || !eq_num || !eq_num->n)
+    {
+        LOG_D("parse failed for %s", expr_to_string(expr).c_str());
+        return;
+    }
+
+    if ( eq_num->op != cot_num )
         return;
 
     LOG_D("  eq=%s, eq_num=%s", expr_to_string(eq).c_str(), expr_to_string(eq_num).c_str());
@@ -600,6 +627,10 @@ inline void handle_equality( cexpr_t* expr )
             if ( !access )
                 return;
 
+            // e.g., ((status & 0x18) >> 2) == 2
+            // mask = 0x18, shift_value = 2, member.offset = 3
+            // value = ((2 << 2) & 0x18) >> 3 = 1
+            // convert to ==> b(status, member) == 1
             const auto mask = bitfield_access_mask( member );
             const auto value = ( ( eq_num->n->_value << info.shift_value ) & mask ) >> member.offset;
 
@@ -668,7 +699,7 @@ inline void handle_value_expr( cexpr_t* access )
 
 inline void handle_left_shifted_expr( cexpr_t* expr )
 {
-    if (!expr)
+    if (!expr || !expr->x || !expr->y)
     {
         LOG_E("null expr!!!");
         return;
@@ -965,7 +996,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
             int idaapi visit_expr( cexpr_t* expr ) override
             {
-                LOG_D("  visit expr: %s", expr_to_string(expr).c_str());
+                LOG_D("visit expr: %s", expr_to_string(expr).c_str());
                 if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
                 {
                     LOG_D("------------------ eq/ne ------------------");
@@ -1031,9 +1062,11 @@ struct bitfields : plugmod_t
     {
         constexpr const char* format = R"(
 AUTOHIDE NONE
-bitfields plugin for Hex-Rays decompiler (%s).
+bitfields plugin for Hex-Rays decompiler.
+Version: %s (%s)
 State: %s)";
-        int code = ask_buttons( "~E~nable", "~D~isable", "~C~lose", -1, format + 1, PLUGIN_VERSION, (nn.altval( 0 ) == 0 ? "Enabled" : "Disabled" ));
+        int code = ask_buttons( "~E~nable", "~D~isable", "~C~lose", -1, format + 1, PLUGIN_VERSION, GIT_COMMIT_ID,
+            (nn.altval( 0 ) == 0 ? "Enabled" : "Disabled" ));
         //  0: click enable button
         //  1: click disable button
         // -1: click close button or close dialog
