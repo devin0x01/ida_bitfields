@@ -16,10 +16,10 @@
 // 设置当前日志级别
 #ifdef _DEBUG
     #pragma message("================== build in debug mode")
-    #define CURRENT_LOG_LEVEL LOG_LEVEL_DEBUG
+    #define CURRENT_LOG_LEVEL LOG_LEVEL_TRACE
 #else
     #pragma message("================== build in release mode")
-    #define CURRENT_LOG_LEVEL LOG_LEVEL_WARN
+    #define CURRENT_LOG_LEVEL LOG_LEVEL_INFO
 #endif
 
 // 日志级别标签
@@ -45,9 +45,6 @@
 #define LOG_I(fmt, ...)   LOG(LOG_LEVEL_INFO,  fmt, ##__VA_ARGS__)
 #define LOG_D(fmt, ...)   LOG(LOG_LEVEL_DEBUG, fmt, ##__VA_ARGS__)
 #define LOG_T(fmt, ...)   LOG(LOG_LEVEL_TRACE, fmt, ##__VA_ARGS__)
-
-// 向后兼容的DLOG宏
-#define DLOG(fmt, ...) LOG_D(fmt, ##__VA_ARGS__)
 
 
 qstring print_expr_type(const cexpr_t* expr)
@@ -215,7 +212,7 @@ inline void replace_or_delete( cexpr_t* expr, cexpr_t* replacement, bool success
     if ( !replacement )
         return;
 
-    DLOG("  replace expr %s to %s, success=%d", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str(), success);
+    LOG_I("  replace expr %s to %s, success=%d", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str(), success);
     if ( success )
         expr->replace_by( replacement );
     else
@@ -343,7 +340,7 @@ inline uint64_t bitfield_access_mask( udm_t& member )
 template<class Callback>
 bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t byte_offset = 0 , uint8_t shift_value = 0 )
 {
-    DLOG("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(), and_mask, byte_offset, shift_value);
+    LOG_D("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(), and_mask, byte_offset, shift_value);
 
     if ( type.is_ptr() )
     {
@@ -360,26 +357,26 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
         const auto real_offset = i + ( byte_offset * CHAR_BIT );
         member.offset = real_offset;
 
-        DLOG("  checking member at offset %d.%d", byte_offset, i);
+        LOG_T("  checking member at offset %d.%d", byte_offset, i);
         if ( type.find_udm( &member, STRMEM_OFFSET ) == -1 )
             continue;
 
-        DLOG("  found member at offset %d.%d, type=%s, size=%d", byte_offset, i, print_type_name(type).c_str(), member.size);
+        LOG_T("  found member at offset %d.%d, type=%s, size=%d", byte_offset, i, print_type_name(type).c_str(), member.size);
         if ( !member.is_bitfield() )
             continue;
 
-        DLOG("  checking member %s at offset %d.%d, member_offset=%d, size=%d", member.name.c_str(), byte_offset, i, member.offset, member.size);
+        LOG_T("  checking member %s at offset %d.%d, member_offset=%d, size=%d", member.name.c_str(), byte_offset, i, member.offset, member.size);
         if ( member.offset != real_offset )
             continue;
 
-        DLOG("  find member, type=%s, member=%s, member_size=%d, member_offset=%d", print_type_name(type).c_str(),
+        LOG_I("  find member, type=%s, member=%s, member_size=%d, member_offset=%d", print_type_name(type).c_str(),
             member.name.c_str(), member.size, member.offset);
 
         uint64_t mask = bitfield_access_mask( member );
         uint64_t temp_mask = (real_and_mask << (byte_offset * CHAR_BIT));
         if ( member.size != 1 && ( temp_mask & mask ) != mask )
         {
-            msg( "[bitfields] bad offset (%u) and size (%u) mask (0x%X) combo of a field for given mask (0x%X)\n",
+            LOG_W( "[bitfields] bad offset (%u) and size (%u) mask (0x%X) combo of a field for given mask (0x%X)\n",
                 member.offset, member.size, mask, temp_mask );
             return false;
         }
@@ -403,7 +400,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
     {
         // handle simple bitfield access with binary and of a mask.
         // e.g. `x & 0x1`
-        DLOG("  op=%s, expr=%s", get_ctype_name(expr->op), expr_to_string(expr).c_str());
+        LOG_D("  op=%s, expr=%s", get_ctype_name(expr->op), expr_to_string(expr).c_str());
 
         if ( expr->op == cot_band ) // Bitwise-AND
         {
@@ -491,7 +488,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             return res;
         }
 
-        // DLOG("  next expr=%s, type=%s, mask=0x%llX, byte_offset=%u, shift_value=%u", expr_to_string(expr).c_str(),
+        // LOG_D("  next expr=%s, type=%s, mask=0x%llX, byte_offset=%u, shift_value=%u", expr_to_string(expr).c_str(),
         //     get_ctype_name(expr->op), res.mask, res.byte_offset, res.shift_value);
 
         // if ( expr->op == cot_ushr )
@@ -527,13 +524,13 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 
     if ( expr->x->op == cot_cast && expr->x->x->op == cot_ref )
     {
-        DLOG("  handling cast+ref pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
+        LOG_D("  handling cast+ref pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
         res.underlying_expr = expr->x->x->x;
         res.ea = extract_topmost_ea_level2( expr );
     }
     else if ( expr->x->type.is_ptr() && ( expr->x->op == cot_add && expr->x->y->op == cot_num ) && expr->x->x->op == cot_cast )
     {
-        DLOG("  handling cast+add pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
+        LOG_D("  handling cast+add pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
         const auto* num = expr->x->y;
         res.byte_offset = expr->type.get_size() * num->n->_value;
 
@@ -547,12 +544,12 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 // e.g. if (((status & 0x2) >> 1) == 1) {}
 inline void handle_equality( cexpr_t* expr )
 {
-    DLOG("origin expr: %s", expr_to_string(expr).c_str());
+    LOG_D("origin expr: %s", expr_to_string(expr).c_str());
     auto [eq, eq_num] = normalize_binop( expr );
     if ( eq_num->op != cot_num )
         return;
 
-    DLOG("  eq=%s, eq_num=%s", expr_to_string(eq).c_str(), expr_to_string(eq_num).c_str());
+    LOG_D("  eq=%s, eq_num=%s", expr_to_string(eq).c_str(), expr_to_string(eq_num).c_str());
     auto info = unwrap_access( eq );
     if ( !info )
         return;
@@ -603,15 +600,15 @@ inline void handle_equality( cexpr_t* expr )
 
 inline void handle_value_expr( cexpr_t* access )
 {
-    DLOG("origin expr: %s", expr_to_string(access).c_str());
+    LOG_D("origin expr: %s", expr_to_string(access).c_str());
     auto info = unwrap_access( access );
     if ( !info )
     {
-        DLOG("  unwrap_access failed: %s", expr_to_string(access).c_str());
+        LOG_D("  unwrap_access failed: %s", expr_to_string(access).c_str());
         return;
     }
 
-    DLOG("  unwrap done, access info: %s", info.to_string().c_str());
+    LOG_I("  unwrap done, access info: %s", info.to_string().c_str());
 
     cexpr_t* replacement = nullptr;
     auto success = for_each_bitfield(
@@ -628,19 +625,19 @@ inline void handle_value_expr( cexpr_t* access )
 
 inline void handle_left_shifted_expr( cexpr_t* expr )
 {
-    DLOG("origin expr: %s", expr_to_string(expr).c_str());
+    LOG_D("origin expr: %s", expr_to_string(expr).c_str());
     
     // expr is a left shift: expr->x << expr->y
     // We need to check if expr->x is a bitfield access pattern
     auto info = unwrap_access( expr->x );
     if ( !info )
     {
-        DLOG("  unwrap_access failed for shifted expression");
+        LOG_D("  unwrap_access failed for shifted expression");
         return;
     }
 
     // Get the left shift amount - support both constants and variables
-    DLOG("  shift operand type: %s", get_ctype_name(expr->y->op));
+    LOG_D("  shift operand type: %s", get_ctype_name(expr->y->op));
     
     bool is_constant_shift = (expr->y->op == cot_num);
     uint64_t left_shift_amount = 0;
@@ -648,11 +645,11 @@ inline void handle_left_shifted_expr( cexpr_t* expr )
     if (is_constant_shift) 
     {
         left_shift_amount = expr->y->n->_value;
-        DLOG("  constant shift amount: 0x%X", left_shift_amount);
+        LOG_D("  constant shift amount: 0x%X", left_shift_amount);
     }
     else
     {
-        DLOG("  variable shift amount: %s", expr_to_string(expr->y).c_str());
+        LOG_D("  variable shift amount: %s", expr_to_string(expr->y).c_str());
     }
 
     cexpr_t* replacement = nullptr;
@@ -699,7 +696,7 @@ inline void handle_left_shifted_expr( cexpr_t* expr )
 
 inline void handle_assignment( cexpr_t* expr )
 {
-    DLOG("");
+    LOG_D("");
     auto rhs = expr->y;
     auto info = unwrap_access( rhs );
     if ( !info )
@@ -721,7 +718,7 @@ inline void handle_assignment( cexpr_t* expr )
 // match |=
 inline void handle_or_assignment( cexpr_t* expr )
 {
-    DLOG("");
+    LOG_D("");
     // second arg has to be a number
     auto& num = *expr->y;
     if ( num.op != cot_num )
@@ -833,7 +830,7 @@ inline void handle_or_assignment( cexpr_t* expr )
 // match special bit functions
 inline void handle_call( cexpr_t* expr )
 {
-    DLOG("");
+    LOG_D("");
     constexpr static size_t num_bitmask_funcs = 8;
     constexpr static std::string_view functions[] = {
         // bit mask functions
@@ -919,14 +916,10 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
             int idaapi visit_expr( cexpr_t* expr ) override
             {
-                return visit_expr_internal( expr );
-            }
-
-            int idaapi visit_expr_internal( cexpr_t* expr )
-            {
+                LOG_D("  visit expr: %s", expr_to_string(expr).c_str());
                 if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
                 {
-                    DLOG("------------------ eq/ne ------------------");
+                    LOG_D("------------------ eq/ne ------------------");
                     handle_equality(expr);
                 }
                 else if ( expr-> op == cot_slt ) // signed less than
@@ -939,7 +932,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                 }
                 else if ( expr->op == cot_asg ) // assign
                 {
-                    DLOG("------------------ assign ------------------");
+                    LOG_D("------------------ assign ------------------");
                     handle_value_expr(expr->y);
                 }
                 else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
@@ -948,7 +941,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                 }
                 else if ( expr->op == cot_shl ) // left shift: x << y
                 {
-                    DLOG("------------------ left shift ------------------");
+                    LOG_D("------------------ left shift ------------------");
                     handle_left_shifted_expr( expr );
                 }
 
