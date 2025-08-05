@@ -5,13 +5,50 @@
     #define GIT_COMMIT_ID "unknown"
 #endif
 
+
+// 日志级别定义
+#define LOG_LEVEL_ERROR   0
+#define LOG_LEVEL_WARN    1
+#define LOG_LEVEL_INFO    2
+#define LOG_LEVEL_DEBUG   3
+#define LOG_LEVEL_TRACE   4
+
+// 设置当前日志级别
 #ifdef _DEBUG
     #pragma message("================== build in debug mode")
-    #define DLOG(fmt, ...) msg("##### [bitfields] %s: " fmt "\n", __func__, ##__VA_ARGS__)
+    #define CURRENT_LOG_LEVEL LOG_LEVEL_DEBUG
 #else
     #pragma message("================== build in release mode")
-    #define DLOG(fmt, ...)
+    #define CURRENT_LOG_LEVEL LOG_LEVEL_WARN
 #endif
+
+// 日志级别标签
+#define LOG_LEVEL_NAME(level) \
+    ((level) == LOG_LEVEL_ERROR ? "ERROR" : \
+     (level) == LOG_LEVEL_WARN  ? "WARN " : \
+     (level) == LOG_LEVEL_INFO  ? "INFO " : \
+     (level) == LOG_LEVEL_DEBUG ? "DEBUG" : \
+     (level) == LOG_LEVEL_TRACE ? "TRACE" : "UNKNOWN")
+
+// 通用日志宏
+#define LOG(level, fmt, ...) \
+    do { \
+        if ((level) <= CURRENT_LOG_LEVEL) { \
+            msg("[%s] [bitfields] %s: " fmt "\n", \
+                LOG_LEVEL_NAME(level), __func__, ##__VA_ARGS__); \
+        } \
+    } while(0)
+
+// 各级别日志宏
+#define LOG_E(fmt, ...)   LOG(LOG_LEVEL_ERROR, fmt, ##__VA_ARGS__)
+#define LOG_W(fmt, ...)   LOG(LOG_LEVEL_WARN,  fmt, ##__VA_ARGS__)
+#define LOG_I(fmt, ...)   LOG(LOG_LEVEL_INFO,  fmt, ##__VA_ARGS__)
+#define LOG_D(fmt, ...)   LOG(LOG_LEVEL_DEBUG, fmt, ##__VA_ARGS__)
+#define LOG_T(fmt, ...)   LOG(LOG_LEVEL_TRACE, fmt, ##__VA_ARGS__)
+
+// 向后兼容的DLOG宏
+#define DLOG(fmt, ...) LOG_D(fmt, ##__VA_ARGS__)
+
 
 qstring print_expr_type(const cexpr_t* expr)
 {
