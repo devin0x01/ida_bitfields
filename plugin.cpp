@@ -1,6 +1,6 @@
 #include <hexsuite.hpp>
 
-#define PLUGIN_VERSION "0.0.2"
+#define PLUGIN_VERSION "0.0.3"
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
 #endif
@@ -49,7 +49,7 @@
 
 qstring print_expr_type(const cexpr_t* expr)
 {
-    if (!expr) return "[null_expr]";
+    if (!expr) return "?expr_type?";
 
     qstring type_str;
     expr->type.print(&type_str);
@@ -65,19 +65,22 @@ qstring print_type_name(const tinfo_t& type)
 
 qstring expr_to_string(const cexpr_t* expr)
 {
-    if (!expr) return "";
+    if (!expr)
+    {
+        return "??";
+    }
     
     qstring result;
     
     switch (expr->op) {
         case cot_num:
-            result.sprnt("0x%X", expr->n->_value);
+            result.sprnt("0x%X", (expr->n ? expr->n->_value : (unsigned int)-1));
             break;
             
         case cot_var:
             {
                 lvar_t* lvar = &(expr->v.getv());
-                const char* var_name = lvar->name.c_str();
+                const char* var_name = lvar ? lvar->name.c_str() : nullptr;
                 result.sprnt("var:%s", var_name ? var_name : "<unknown>");
             }
             break;
@@ -102,41 +105,29 @@ qstring expr_to_string(const cexpr_t* expr)
             break;
         
         case cot_ne:  // Not equal comparison (!=)
-            result.sprnt("(%s != %s)", 
-                         expr_to_string(expr->x).c_str(), 
-                         expr_to_string(expr->y).c_str());
+            result.sprnt("(%s != %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
 
 
         case cot_band:
-            result.sprnt("(%s & %s)", 
-                         expr_to_string(expr->x).c_str(), 
-                         expr_to_string(expr->y).c_str());
+            result.sprnt("(%s & %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
 
         case cot_bor:  // Bitwise OR (|)
-            result.sprnt("(%s | %s)", 
-                         expr_to_string(expr->x).c_str(), 
-                         expr_to_string(expr->y).c_str());
+            result.sprnt("(%s | %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
             
         case cot_sshr:
         case cot_ushr:
-            result.sprnt("(%s >> %s)", 
-                         expr_to_string(expr->x).c_str(), 
-                         expr_to_string(expr->y).c_str());
+            result.sprnt("(%s >> %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
 
         case cot_shl:
-            result.sprnt("(%s << %s)", 
-                         expr_to_string(expr->x).c_str(), 
-                         expr_to_string(expr->y).c_str());
+            result.sprnt("(%s << %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
             
         case cot_add:
-            result.sprnt("(%s + %s)", 
-                         expr_to_string(expr->x).c_str(), 
-                         expr_to_string(expr->y).c_str());
+            result.sprnt("(%s + %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
 
         case cot_cast:  // Type cast
@@ -147,9 +138,7 @@ qstring expr_to_string(const cexpr_t* expr)
             break;
         
         case cot_asg:  // Assignment (=)
-            result.sprnt("%s = %s", 
-                         expr_to_string(expr->x).c_str(), 
-                         expr_to_string(expr->y).c_str());
+            result.sprnt("%s = %s", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
             
         case cot_call:  // Function call
@@ -159,11 +148,20 @@ qstring expr_to_string(const cexpr_t* expr)
                 // Format arguments
                 qstring args_str;
                 carglist_t* args = expr->a;
-                for (int i = 0; i < args->size(); i++) {
-                    if (i > 0) args_str.append(", ");
-                    args_str.append(expr_to_string(&(args->at(i))));
+                if (args == nullptr)
+                {
+                    args_str.append("??, ...");
                 }
-                
+                else
+                {
+                    for (int i = 0; i < args->size(); i++)
+                    {
+                        if (i > 0)
+                            args_str.append(", ");
+                        args_str.append(expr_to_string(&(args->at(i))));
+                    }
+                }
+
                 result.sprnt("%s(%s)", func_str.c_str(), args_str.c_str());
             }
             break;
@@ -183,10 +181,10 @@ qstring expr_to_string(const cexpr_t* expr)
 struct access_info
 {
     cexpr_t* underlying_expr = nullptr;
-    uint64_t mask;
-    ea_t     ea;
-    uint64_t byte_offset;
-    uint8_t  shift_value;
+    uint64_t mask = 0;
+    ea_t     ea = BADADDR;
+    uint64_t byte_offset = 0;
+    uint8_t  shift_value = 0;
 
     tinfo_t& type() const { return underlying_expr->type; }
     explicit operator bool() const { return underlying_expr != nullptr; }
@@ -395,12 +393,20 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
 inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 {
     access_info res{};
+    if (!expr)
+    {
+        LOG_E("null expr");
+        return res;
+    }
+
+    qstring origin_expr_str;
+    origin_expr_str.sprnt("op=%s, expr=%s", get_ctype_name(expr->op), expr_to_string(expr).c_str());
 
     if ( !is_assignee )
     {
         // handle simple bitfield access with binary and of a mask.
         // e.g. `x & 0x1`
-        LOG_D("  op=%s, expr=%s", get_ctype_name(expr->op), expr_to_string(expr).c_str());
+        LOG_D("  %s", origin_expr_str.c_str());
 
         if ( expr->op == cot_band ) // Bitwise-AND
         {
@@ -411,12 +417,20 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             res.mask = num->n->_value;
             res.shift_value = 0;
             expr = expr->theother( num );
+            if (!expr)
+            {
+                LOG_E("parse failed 1 for %s", origin_expr_str.c_str());
+                return res;
+            }
 
-            if (expr->op == cot_ushr )
+            if (expr->op == cot_ushr)
             {
                 auto shiftnum = expr->find_num_op();
                 if ( !shiftnum )
+                {
+                    LOG_E("parse failed 2 for %s", origin_expr_str.c_str());
                     return res;
+                }
 
                 expr = expr->theother( shiftnum );
                 res.shift_value = (uint8_t) shiftnum->n->_value;
@@ -464,7 +478,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
                 return res;
 
             expr = expr->theother( num );
-            res.mask = 1 << ( ( expr->type.get_size() * CHAR_BIT ) - 1 );
+            res.mask = 1ull << ( ( expr->type.get_size() * CHAR_BIT ) - 1 );
             res.shift_value = 0;
         }
         else if (expr->op == cot_ushr)
@@ -473,7 +487,10 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             // e.g. `*((type *)var + 8) >> 6`
             auto shiftnum = expr->find_num_op();
             if ( !shiftnum )
+            {
+                LOG_E("parse failed 3 for %s", origin_expr_str.c_str());
                 return res;
+            }
 
             expr = expr->theother( shiftnum );
             
@@ -505,7 +522,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
         // }
     }
 
-    if ( expr->op != cot_ptr )
+    if ( !expr || expr->op != cot_ptr )
     {
         return res;
     }
@@ -517,18 +534,32 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
         use_ea = use_ea != BADADDR ? use_ea : expr->x->ea;
         use_ea = use_ea != BADADDR ? use_ea : expr->ea;
         if ( use_ea == BADADDR )
-            msg( "[bitfields] can't find parent ea - won't be able to save union selection\n" );
+        {
+            LOG_E( "[bitfields] can't find parent ea - won't be able to save union selection\n" );
+        }
 
         return use_ea;
     };
+
+    if (!expr->x || !expr->x->x || !expr->x->x->x)
+    {
+        return res;
+    }
 
     if ( expr->x->op == cot_cast && expr->x->x->op == cot_ref )
     {
         LOG_D("  handling cast+ref pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
         res.underlying_expr = expr->x->x->x;
         res.ea = extract_topmost_ea_level2( expr );
+        return res;
     }
-    else if ( expr->x->type.is_ptr() && ( expr->x->op == cot_add && expr->x->y->op == cot_num ) && expr->x->x->op == cot_cast )
+
+    if (!expr->x->y)
+    {
+        return res;
+    }
+
+    if ( expr->x->type.is_ptr() && ( expr->x->op == cot_add && expr->x->y->op == cot_num ) && expr->x->x->op == cot_cast )
     {
         LOG_D("  handling cast+add pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
         const auto* num = expr->x->y;
@@ -544,9 +575,15 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 // e.g. if (((status & 0x2) >> 1) == 1) {}
 inline void handle_equality( cexpr_t* expr )
 {
+    if (!expr)
+    {
+        LOG_E("null expr!!!");
+        return;
+    }
+
     LOG_D("origin expr: %s", expr_to_string(expr).c_str());
     auto [eq, eq_num] = normalize_binop( expr );
-    if ( eq_num->op != cot_num )
+    if ( !eq_num || eq_num->op != cot_num )
         return;
 
     LOG_D("  eq=%s, eq_num=%s", expr_to_string(eq).c_str(), expr_to_string(eq_num).c_str());
@@ -600,6 +637,12 @@ inline void handle_equality( cexpr_t* expr )
 
 inline void handle_value_expr( cexpr_t* access )
 {
+    if (!access)
+    {
+        LOG_E("null expr!!!");
+        return;
+    }
+
     LOG_D("origin expr: %s", expr_to_string(access).c_str());
     auto info = unwrap_access( access );
     if ( !info )
@@ -625,6 +668,12 @@ inline void handle_value_expr( cexpr_t* access )
 
 inline void handle_left_shifted_expr( cexpr_t* expr )
 {
+    if (!expr)
+    {
+        LOG_E("null expr!!!");
+        return;
+    }
+
     LOG_D("origin expr: %s", expr_to_string(expr).c_str());
     
     // expr is a left shift: expr->x << expr->y
@@ -922,7 +971,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                     LOG_D("------------------ eq/ne ------------------");
                     handle_equality(expr);
                 }
-                else if ( expr-> op == cot_slt ) // signed less than
+                else if ( expr->op == cot_slt ) // signed less than
                 {
                     // handle_value_expr( expr );
                 }
