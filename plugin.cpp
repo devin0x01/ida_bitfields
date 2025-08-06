@@ -1,6 +1,7 @@
 #include <hexsuite.hpp>
 
 #define PLUGIN_VERSION "0.0.4"
+#define BUILD_TIME __DATE__ " " __TIME__
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
 #endif
@@ -1077,6 +1078,7 @@ struct bitfields : plugmod_t
     {
         msg("*****************************************************************\n");
         msg("      Plugin bitfields was %s: version %s (%s)   \n", (s ? "enabled" : "disabled"), PLUGIN_VERSION, GIT_COMMIT_ID);
+        msg("      Build Time: %s\n", BUILD_TIME);
         msg("*****************************************************************\n\n");
         bitfields_optimizer.set_state( s );
     }
@@ -1098,9 +1100,10 @@ struct bitfields : plugmod_t
 AUTOHIDE NONE
 bitfields plugin for Hex-Rays decompiler.
 Version: %s (%s)
+Build Time: %s
 State: %s)";
         int code = ask_buttons( "~E~nable", "~D~isable", "~C~lose", -1, format + 1, PLUGIN_VERSION, GIT_COMMIT_ID,
-            (nn.altval( 0 ) == 0 ? "Enabled" : "Disabled" ));
+            BUILD_TIME, (nn.altval( 0 ) == 0 ? "Enabled" : "Disabled" ));
         //  0: click enable button
         //  1: click disable button
         // -1: click close button or close dialog
