@@ -122,6 +122,10 @@ qstring expr_to_string(const cexpr_t* expr)
             }
             break;
 
+        case cot_eq:
+            result.sprnt("(%s == %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
+            break;
+
         case cot_ne:  // Not equal comparison (!=)
             result.sprnt("(%s != %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
@@ -146,6 +150,10 @@ qstring expr_to_string(const cexpr_t* expr)
             
         case cot_add:
             result.sprnt("(%s + %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
+            break;
+
+        case cot_sub:
+            result.sprnt("(%s - %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
 
         case cot_cast:  // Type cast
@@ -188,7 +196,7 @@ qstring expr_to_string(const cexpr_t* expr)
             break;
 
         default:
-            result.sprnt("<%s:unknownop>", get_ctype_name(expr->op));
+            result.sprnt("<%s:expr>", get_ctype_name(expr->op));
             break;
     }
     
@@ -440,7 +448,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             expr = expr->theother( num );
             if (!expr)
             {
-                LOG_E("parse failed for %s", origin_expr_str.c_str());
+                LOG_E("band cannot get the other expr for %s", origin_expr_str.c_str());
                 return res;
             }
 
@@ -514,6 +522,11 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             }
 
             expr = expr->theother( shiftnum );
+            if (!expr)
+            {
+                LOG_E("ushr cannot get the other expr for %s", origin_expr_str.c_str());
+                return res;
+            }
             
             // Set mask based on the actual type size after dereference
             // For char*: mask = 0xFF, for short*: mask = 0xFFFF, etc.
@@ -996,10 +1009,17 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
             int idaapi visit_expr( cexpr_t* expr ) override
             {
-                LOG_D("visit expr: %s", expr_to_string(expr).c_str());
+                if (!expr)
+                {
+                    LOG_E("visit null expr");
+                    return 0;
+                }
+
+                LOG_D("------------------ %s ------------------", get_ctype_name(expr->op));
+                LOG_D("visit expr: %s, op=%s", expr_to_string(expr).c_str(), get_ctype_name(expr->op));
+
                 if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
                 {
-                    LOG_D("------------------ eq/ne ------------------");
                     handle_equality(expr);
                 }
                 else if ( expr->op == cot_slt ) // signed less than
@@ -1012,17 +1032,23 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                 }
                 else if ( expr->op == cot_asg ) // assign
                 {
-                    LOG_D("------------------ assign ------------------");
                     handle_value_expr(expr->y);
                 }
                 else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
                 {
                     // handle_or_assignment( expr );
                 }
-                else if ( expr->op == cot_shl ) // left shift: x << y
+                else if (expr->op == cot_shl) // e.g. *v334 += ((*((_BYTE *)net + 33) >> 2) & 3) << v52
                 {
-                    LOG_D("------------------ left shift ------------------");
-                    handle_left_shifted_expr( expr );
+                    handle_left_shifted_expr(expr);
+                }
+                else if (expr->op == cot_band)
+                {
+                    handle_value_expr(expr);
+                }
+                else if (expr->op == cot_sshr || expr->op == cot_ushr)
+                {
+                    // handle_value_expr(expr);
                 }
 
                 return 0;
