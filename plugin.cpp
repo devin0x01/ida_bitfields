@@ -1,6 +1,6 @@
 #include <hexsuite.hpp>
 
-#define PLUGIN_VERSION "0.0.3"
+#define PLUGIN_VERSION "0.0.4"
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
 #endif
@@ -66,7 +66,7 @@ qstring expr_to_string(const cexpr_t* expr)
     
     switch (expr->op) {
         case cot_num:
-            result.sprnt("0x%X", (expr->n ? expr->n->_value : (unsigned int)-1));
+            result.sprnt("0x%llX", (expr->n ? expr->n->_value : (uint64_t)-1));
             break;
             
         case cot_var:
@@ -631,6 +631,8 @@ inline void handle_equality( cexpr_t* expr )
     if ( !info )
         return;
 
+    LOG_I("  unwrap done, access info: %s", info.to_string().c_str());
+
     cexpr_t* replacement = nullptr;
     auto success = for_each_bitfield(
         [ &, eq_num = eq_num ] ( udm_t& member )
@@ -644,8 +646,15 @@ inline void handle_equality( cexpr_t* expr )
             // mask = 0x18, shift_value = 2, member.offset = 3
             // value = ((2 << 2) & 0x18) >> 3 = 1
             // convert to ==> b(status, member) == 1
-            const auto mask = bitfield_access_mask( member );
-            const auto value = ( ( eq_num->n->_value << info.shift_value ) & mask ) >> member.offset;
+            // const auto mask = bitfield_access_mask( member );
+            int byte_offset = info.byte_offset;
+            int field_offset = (member.offset - byte_offset * CHAR_BIT);
+            if (field_offset < 0)
+                return;
+
+            const auto value = ( ( eq_num->n->_value & info.mask ) << info.shift_value ) >> field_offset;
+            LOG_T(  "convert_shift_value=%d, eq_num=%d, mask=0x%llX, shift_value=%d, byte_offset=%d", value, 
+                eq_num->n->_value, info.mask, info.shift_value, info.byte_offset);
 
             // if the flag is multi byte, reconstruct the comparison
             if ( member.size > 1 )
@@ -674,7 +683,7 @@ inline void handle_equality( cexpr_t* expr )
             }
 
             merge_accesses( replacement, access, expr->op == cot_eq ? cot_land : cot_lor, expr->ea, tinfo_t{ BTF_BOOL } );
-        }, info.underlying_expr->type, info.mask, info.byte_offset );
+        }, info.underlying_expr->type, info.mask, info.byte_offset, info.shift_value);
 
     replace_or_delete( expr, replacement, success );
 }
@@ -1015,8 +1024,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                     return 0;
                 }
 
-                LOG_D("------------------ %s ------------------", get_ctype_name(expr->op));
-                LOG_D("visit expr: %s, op=%s", expr_to_string(expr).c_str(), get_ctype_name(expr->op));
+                LOG_D("------------------ %s, %s ------------------", get_ctype_name(expr->op), expr_to_string(expr).c_str());
 
                 if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
                 {
