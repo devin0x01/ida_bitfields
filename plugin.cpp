@@ -236,11 +236,16 @@ inline void replace_or_delete( cexpr_t* expr, cexpr_t* replacement, bool success
     if ( !replacement )
         return;
 
-    LOG_I("######## replace expr %s to %s, success=%d", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str(), success);
     if ( success )
+    {
+        LOG_I("######## replace expr %s --> %s", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str());
         expr->replace_by( replacement );
+    }
     else
+    {
+        LOG_I("######## delete expr %s  $$  %s", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str());
         delete replacement;
+    }
 }
 
 inline void merge_accesses( cexpr_t*& original, cexpr_t* access, ctype_t op, ea_t ea, const tinfo_t& type )
@@ -385,20 +390,20 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
         const auto real_offset = i + ( byte_offset * CHAR_BIT );
         member.offset = real_offset;
 
-        LOG_T("  checking member at offset %d.%d", byte_offset, i);
+        LOG_T("  try get member at offset %d.%d", byte_offset, i);
         if ( type.find_udm( &member, STRMEM_OFFSET ) == -1 )
             continue;
 
-        LOG_T("  found member at offset %d.%d, type=%s, size=%d", byte_offset, i, print_type_name(type).c_str(), member.size);
+        LOG_T("  checking is_bitfield for member at offset %d.%d, size=%d", byte_offset, i, member.size);
         if ( !member.is_bitfield() )
             continue;
 
-        LOG_T("  checking member %s at offset %d.%d, member_offset=%d, size=%d", member.name.c_str(), byte_offset, i, member.offset, member.size);
+        LOG_T("  checking offset for member %s at offset %d.%d, member_offset=%d, size=%d", member.name.c_str(), byte_offset, i, member.offset, member.size);
         if ( member.offset != real_offset )
             continue;
 
-        LOG_I("  find member, type=%s, member=%s, member_size=%d, member_offset=%d", print_type_name(type).c_str(),
-            member.name.c_str(), member.size, member.offset);
+        LOG_I("  find member, type=%s, member=%s, member_offset=%d, size=%d", print_type_name(type).c_str(),
+            member.name.c_str(), member.offset, member.size);
 
         uint64_t mask = bitfield_access_mask( member );
         uint64_t temp_mask = (real_and_mask << (byte_offset * CHAR_BIT));
@@ -442,7 +447,10 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
         {
             auto num = expr->find_num_op();
             if ( !num )
+            {
+                LOG_T("  find none band-num expr");
                 return res;
+            }
 
             res.mask = num->n->_value;
             res.shift_value = 0;
@@ -557,7 +565,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
         // }
     }
 
-    if ( !expr || expr->op != cot_ptr )
+    if ( !expr || expr->op != cot_ptr ) // *ptr
     {
         return res;
     }
@@ -576,11 +584,30 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
         return use_ea;
     };
 
-    if (!expr->x || !expr->x->x || !expr->x->x->x)
+    if (!expr->x || !expr->x->x)
     {
+        LOG_T("  null sub_expr 1");
+        return res;
+    }
+    LOG_D("  sub_expr->x is %s, %s, sub_expr->x->x is %s, %s", expr_to_string(expr->x).c_str(), get_ctype_name(expr->x->op),
+        expr_to_string(expr->x->x).c_str(), get_ctype_name(expr->x->x->op));
+
+    // case1: *( (T *)ptr )
+    if ( expr->x->op == cot_cast && expr->x->x->op == cot_var)
+    {
+        LOG_D("  handling cast+var pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
+        res.underlying_expr = expr->x->x;
+        res.ea = extract_topmost_ea_level2( expr );
         return res;
     }
 
+    if (!expr->x->x->x)
+    {
+        LOG_T("  null sub_expr 2");
+        return res;
+    }
+
+    // case2: *( (T *)&x )
     if ( expr->x->op == cot_cast && expr->x->x->op == cot_ref )
     {
         LOG_D("  handling cast+ref pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
@@ -591,9 +618,11 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 
     if (!expr->x->y)
     {
+        LOG_T("  null sub_expr 3");
         return res;
     }
 
+    // case3: *( (T *)ptr + byte_offset )
     if ( expr->x->type.is_ptr() && ( expr->x->op == cot_add && expr->x->y->op == cot_num ) && expr->x->x->op == cot_cast )
     {
         LOG_D("  handling cast+add pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
@@ -1019,13 +1048,18 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
             int idaapi visit_expr( cexpr_t* expr ) override
             {
+                return visit_expr_internal( expr );
+            }
+
+            int idaapi visit_expr_internal(cexpr_t *expr)
+            {
                 if (!expr)
                 {
                     LOG_E("visit null expr");
                     return 0;
                 }
 
-                LOG_D("------------------ %s, %s ------------------", get_ctype_name(expr->op), expr_to_string(expr).c_str());
+                LOG_D("------------------ %s, ea=0x%llX, %s ------------------", get_ctype_name(expr->op), expr->ea, expr_to_string(expr).c_str());
 
                 if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
                 {
@@ -1038,6 +1072,14 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                 else if ( expr->op == cot_call ) // call a function
                 {
                     // handle_call( expr );
+                    carglist_t* args = expr->a;
+                    if (args)
+                    {
+                        for (int i = 0; i < args->size(); i++)
+                        {
+                            visit_expr_internal(&(args->at(i)));
+                        }
+                    }
                 }
                 else if ( expr->op == cot_asg ) // assign
                 {
@@ -1050,14 +1092,6 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                 else if (expr->op == cot_shl) // e.g. *v334 += ((*((_BYTE *)net + 33) >> 2) & 3) << v52
                 {
                     handle_left_shifted_expr(expr);
-                }
-                else if (expr->op == cot_band)
-                {
-                    handle_value_expr(expr);
-                }
-                else if (expr->op == cot_sshr || expr->op == cot_ushr)
-                {
-                    // handle_value_expr(expr);
                 }
 
                 return 0;
