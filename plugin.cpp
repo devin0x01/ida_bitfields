@@ -215,6 +215,7 @@ qstring expr_to_string(const cexpr_t* expr)
 
 struct access_info
 {
+    cexpr_t* ptr_expr = nullptr;
     cexpr_t* underlying_expr = nullptr;
     uint64_t mask = 0;
     ea_t     ea = BADADDR;
@@ -223,7 +224,7 @@ struct access_info
     bool is_dummy_mask = false;
 
     tinfo_t& type() const { return underlying_expr->type; }
-    explicit operator bool() const { return underlying_expr != nullptr; }
+    explicit operator bool() const { return ptr_expr != nullptr && underlying_expr != nullptr; }
 
     qstring to_string() const
     {
@@ -391,7 +392,7 @@ inline std::optional<uint64_t> bitfield_access_mask( udm_t& member, uint64_t byt
 // executes callback for each member in `type` where its offset coincides with `and_mask`.
 // `cmp_mask` is used to calculate enabled bits in the bitfield.
 template<class Callback>
-bool for_each_bitfield( Callback cb, tinfo_t type, const std::pair<bool, uint64_t> &and_mask_pair, uint64_t byte_offset = 0 , uint8_t shift_value = 0 )
+bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, const std::pair<bool, uint64_t> &and_mask_pair, uint64_t byte_offset = 0 , uint8_t shift_value = 0 )
 {
     auto [is_dummy_mask, and_mask] = and_mask_pair;
     LOG_D("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(), and_mask, byte_offset, shift_value);
@@ -401,9 +402,19 @@ bool for_each_bitfield( Callback cb, tinfo_t type, const std::pair<bool, uint64_
         type = type.get_ptrarr_object();
     }
 
+    static std::set<int> cast_size_set{1, 2, 4, 8};
+    if (cast_size_set.count(cast_size) == 0)
+    {
+        LOG_E("  cast_size=%d is error. type=%s", cast_size, print_type_name(type).c_str());
+        return false;
+    }
+
     udm_t member;
-    uint64_t real_and_mask = (and_mask << shift_value);
+    // e.g.( *((char *)p + 6) >> 5) & 0x03
+    uint64_t real_and_mask = (and_mask << shift_value) & ((1ull << (cast_size * CHAR_BIT)) - 1);
     uint64_t all_member_mask = 0;
+
+    LOG_T("  real_and_mask=0x%llX, and_mask=0x%llX, shift_value=%d", real_and_mask, and_mask, shift_value);
 
     for ( uint8_t i = 0; i < 64; ++i )
     {
@@ -462,6 +473,12 @@ bool for_each_bitfield( Callback cb, tinfo_t type, const std::pair<bool, uint64_
     }
 
     return true;
+}
+
+template<class Callback>
+bool for_each_bitfield(const access_info &info, Callback cb)
+{
+    return for_each_bitfield(cb, info.underlying_expr->type, info.ptr_expr->ptrsize, {info.is_dummy_mask, info.mask}, info.byte_offset, info.shift_value);
 }
 
 // handles various cases of potential bitfield access.
@@ -630,6 +647,9 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
         return use_ea;
     };
 
+    LOG_T("  sub_expr %s, memory access size is %d", expr_to_string(expr).c_str(), expr->ptrsize);
+    res.ptr_expr = expr;
+
     if (!expr->x || !expr->x->x)
     {
         LOG_T("  null sub_expr 1");
@@ -710,7 +730,7 @@ inline void handle_equality( cexpr_t* expr )
     LOG_I("  unwrap done, access info: %s", info.to_string().c_str());
 
     cexpr_t* replacement = nullptr;
-    auto success = for_each_bitfield(
+    auto success = for_each_bitfield(info,
         [ &, eq_num = eq_num ] ( udm_t& member )
         {
             // construct the call / access itself
@@ -759,7 +779,7 @@ inline void handle_equality( cexpr_t* expr )
             }
 
             merge_accesses( replacement, access, expr->op == cot_eq ? cot_land : cot_lor, expr->ea, tinfo_t{ BTF_BOOL } );
-        }, info.underlying_expr->type, {info.is_dummy_mask, info.mask}, info.byte_offset, info.shift_value);
+        });
 
     replace_or_delete( expr, replacement, success );
 }
@@ -783,14 +803,14 @@ inline void handle_value_expr( cexpr_t* access )
     LOG_I("  unwrap done, access info: %s", info.to_string().c_str());
 
     cexpr_t* replacement = nullptr;
-    auto success = for_each_bitfield(
+    auto success = for_each_bitfield(info,
         [ & ] ( udm_t& member )
         {
             // TODO: for assignment where more than 1 field is being accessed create a new bitfield type for the result
             // that would contain the correctly masked and shifted fields
             const auto access = create_bitfield_access( info, member, info.ea, info.type() );
             merge_accesses( replacement, access, cot_bor, info.ea, info.type() );
-        }, info.underlying_expr->type, {info.is_dummy_mask, info.mask}, info.byte_offset , info.shift_value);
+        });
 
     replace_or_delete( access, replacement, success );
 }
@@ -831,7 +851,7 @@ inline void handle_left_shifted_expr( cexpr_t* expr )
     }
 
     cexpr_t* replacement = nullptr;
-    auto success = for_each_bitfield(
+    auto success = for_each_bitfield(info,
         [ &, is_constant_shift, left_shift_amount ] ( udm_t& member )
         {
             // Create the bitfield access
@@ -867,7 +887,7 @@ inline void handle_left_shifted_expr( cexpr_t* expr )
             shifted_access->ea = expr->ea;
             
             merge_accesses( replacement, shifted_access, cot_bor, expr->ea, expr->type );
-        }, info.underlying_expr->type, {info.is_dummy_mask, info.mask}, info.byte_offset, info.shift_value);
+        });
 
     replace_or_delete( expr, replacement, success );
 }
@@ -881,14 +901,14 @@ inline void handle_assignment( cexpr_t* expr )
         return;
 
     cexpr_t* replacement = nullptr;
-    auto success = for_each_bitfield(
+    auto success = for_each_bitfield(info,
         [ & ] ( udm_t& member )
         {
             // TODO: for assignment where more than 1 field is being accessed create a new bitfield type for the result
             // that would contain the correctly masked and shifted fields
             const auto access = create_bitfield_access( info, member, expr->y->ea, expr->x->type );
             merge_accesses( replacement, access, cot_bor, rhs->ea, expr->x->type );
-        }, info.underlying_expr->type, {info.is_dummy_mask, info.mask}, info.byte_offset );
+        });
 
     replace_or_delete( expr->y, replacement, success );
 }
@@ -924,7 +944,7 @@ inline void handle_or_assignment( cexpr_t* expr )
                 helper->helper = alloc_cstr( member.name.c_str() );
 
                 merge_accesses( replacement, helper, cot_bor, info.ea, type );
-            }, info.underlying_expr->type, {false, mask}, info.byte_offset );
+            }, info.underlying_expr->type, info.ptr_expr->ptrsize, {false, mask}, info.byte_offset );
 
         replace_or_delete( &num, replacement, success );
     }
@@ -937,7 +957,7 @@ inline void handle_or_assignment( cexpr_t* expr )
             [ & ] ( udm_t& member )
             {
                 fields.push_back( alloc_cstr( member.name.c_str() ) );
-            }, info.underlying_expr->type, {false, mask}, info.byte_offset );
+            }, info.underlying_expr->type, info.ptr_expr->ptrsize, {false, mask}, info.byte_offset );
 
             if ( !success )
             {
@@ -1076,7 +1096,7 @@ inline void handle_call( cexpr_t* expr )
             helper->helper = alloc_cstr( member.name.c_str() );
 
             merge_accesses( replacement, helper, cot_bor, arg1.ea, arg1.type );
-        }, arg0->type, {false, mask} );
+        }, arg0->type, sizeof(uint64_t), {false, mask} ); // TODO
 
     replace_or_delete( &arg1, replacement, success );
 }
