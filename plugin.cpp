@@ -1,7 +1,7 @@
 #include <optional>
 #include <hexsuite.hpp>
 
-#define PLUGIN_VERSION "0.0.4"
+#define PLUGIN_VERSION "0.0.5"
 #define BUILD_TIME __DATE__ " " __TIME__
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
@@ -630,7 +630,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
     if ( expr->x->op == cot_cast && expr->x->x->op == cot_var)
     {
         LOG_D("  handling cast+var pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
-        res.underlying_expr = expr->x->x;
+        // res.underlying_expr = expr->x->x;
         res.ea = extract_topmost_ea_level2( expr );
         return res;
     }
