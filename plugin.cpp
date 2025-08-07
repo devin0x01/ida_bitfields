@@ -1,3 +1,4 @@
+#include <optional>
 #include <hexsuite.hpp>
 
 #define PLUGIN_VERSION "0.0.4"
@@ -243,7 +244,7 @@ inline void replace_or_delete( cexpr_t* expr, cexpr_t* replacement, bool success
     }
     else
     {
-        LOG_I("######## delete expr %s  $$  %s", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str());
+        LOG_I("######## recover expr %s and delete expr %s", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str());
         delete replacement;
     }
 }
@@ -360,11 +361,21 @@ inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t o
     return access;
 }
 
-inline uint64_t bitfield_access_mask( udm_t& member )
+inline std::optional<uint64_t> bitfield_access_mask( udm_t& member, uint64_t byte_offset )
 {
+    // Prevent an object's member.offset is larger than 64*8
+    uint64_t temp_offset = byte_offset * CHAR_BIT;
+    if (member.offset < temp_offset)
+    {
+        return std::nullopt;
+    }
+
     uint64_t mask = 0;
     for ( int i = member.offset; i < member.offset + member.size; ++i )
-        mask |= ( 1ull << i );
+    {
+        mask |= ( 1ull << (i - temp_offset) );
+    }
+
     return mask;
 }
 
@@ -382,6 +393,8 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
 
     udm_t member;
     uint64_t real_and_mask = (and_mask << shift_value);
+    uint64_t all_member_mask = 0;
+
     for ( uint8_t i = 0; i < 64; ++i )
     {
         if ( !( real_and_mask & ( 1ull << i ) ) )
@@ -405,17 +418,38 @@ bool for_each_bitfield( Callback cb, tinfo_t type, uint64_t and_mask, uint64_t b
         LOG_I("  find member, type=%s, member=%s, member_offset=%d, size=%d", print_type_name(type).c_str(),
             member.name.c_str(), member.offset, member.size);
 
-        uint64_t mask = bitfield_access_mask( member );
-        uint64_t temp_mask = (real_and_mask << (byte_offset * CHAR_BIT));
-        if ( member.size != 1 && ( temp_mask & mask ) != mask )
+        auto mask_wrap = bitfield_access_mask( member, byte_offset );
+        if (!mask_wrap)
+        {
+            LOG_D("  member_offset=%d is less than byte_offset*8=%d", member.offset, byte_offset * 8);
+            return false;
+        }
+
+        uint64_t mask = mask_wrap.value();
+        if ( member.size != 1 && ( real_and_mask & mask ) != mask )
         {
             LOG_W( "[bitfields] bad offset (%u) and size (%u) mask (0x%X) combo of a field for given mask (0x%X)\n",
-                member.offset, member.size, mask, temp_mask );
+                member.offset, member.size, mask, real_and_mask );
             return false;
         }
 
         cb( member );
+        all_member_mask |= mask;
     }
+
+    if (!all_member_mask)
+    {
+        LOG_I("  do not find any member");
+        return false;
+    }
+
+    // Fix the case that all_member_mask=0x04 but real_and_mask=0x07
+    if (all_member_mask != real_and_mask)
+    {
+        LOG_I("  give up replacing field due to different mask 0x%llX and 0x%llX", all_member_mask, real_and_mask);
+        return false;
+    }
+
     return true;
 }
 
@@ -1148,4 +1182,4 @@ State: %s)";
         return true;
     }
 };
-plugin_t PLUGIN = { IDP_INTERFACE_VERSION, PLUGIN_MULTI, hex::init_hexray<bitfields>, nullptr, nullptr, "bitfields", nullptr, "bitfields", nullptr, };
+plugin_t PLUGIN = { IDP_INTERFACE_VERSION, PLUGIN_MULTI, hex::init_hexray<bitfields>, nullptr, nullptr, "bitfields", nullptr, "bitfields", "Ctrl-Alt-B" };
