@@ -48,6 +48,8 @@
 #define LOG_D(fmt, ...)   LOG(LOG_LEVEL_DEBUG, fmt, ##__VA_ARGS__)
 #define LOG_T(fmt, ...)   LOG(LOG_LEVEL_TRACE, fmt, ##__VA_ARGS__)
 
+static int replace_count = 0;
+
 
 qstring print_type_name(const tinfo_t& type)
 {
@@ -251,6 +253,7 @@ inline void replace_or_delete( cexpr_t* expr, cexpr_t* replacement, bool success
     {
         LOG_I("######## replace expr %s --> %s", expr_to_string(expr).c_str(), expr_to_string(replacement).c_str());
         expr->replace_by( replacement );
+        replace_count++;
     }
     else
     {
@@ -662,7 +665,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
     if ( expr->x->op == cot_cast && expr->x->x->op == cot_var)
     {
         LOG_D("  handling cast+var pattern: %s, %s", expr_to_string(expr).c_str(), expr_to_string(expr->x).c_str());
-        // res.underlying_expr = expr->x->x;
+        res.underlying_expr = expr->x->x;
         res.ea = extract_topmost_ea_level2( expr );
         return res;
     }
@@ -1107,6 +1110,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
         if ( maturity != CMAT_FINAL )
             return 0;
         msg("============================================================= bitfields start\n");
+        replace_count = 0;
 
         struct visitor : ctree_visitor_t
         {
@@ -1206,7 +1210,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
         visitor{}.apply_to( &cfunc->body, nullptr );
 
-        msg("============================================================= bitfields end\n");
+        msg("============================================================= bitfields end (%d)\n", replace_count);
         return 0;
     } );
 
