@@ -1136,16 +1136,39 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                 }
                 else if ( expr->op == cot_asg || expr->op == cot_asgadd || expr->op == cot_asgsub)
                 {
-                    if (expr->y)
+                    // case1: int buf += (...) << shift;
+                    // case2: int buf += (...) >> (10 - offset);
+                    // case3: int buf += (uint8_t)(...) >> (10 - offset);
+                    while (expr->y)
                     {
-                        if (expr->y->op == cot_shl)
+                        if (expr->y->op == cot_shl) // case1
                         {
                             handle_left_shifted_expr(expr->y);
+                            break;
                         }
-                        else
+
+                        bool is_shr = (expr->y->op == cot_sshr || expr->y->op == cot_ushr) && (expr->y->y && expr->y->y->op != cot_num);
+                        if (is_shr) 
                         {
-                            handle_value_expr(expr->y);
+                            cexpr_t *next = expr->y->x;
+                            if (!next)
+                            {
+                                break;
+                            }
+
+                            if (next->op == cot_cast)
+                            {
+                                handle_value_expr(next->x); // case3
+                            }
+                            else
+                            {
+                                handle_value_expr(next); // case2
+                            }
+                            break;
                         }
+
+                        handle_value_expr(expr->y);
+                        break;
                     }
                 }
                 else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
