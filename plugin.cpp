@@ -223,7 +223,6 @@ struct access_info
     ea_t     ea = BADADDR;
     uint64_t byte_offset = 0;
     uint8_t  shift_value = 0;
-    bool is_dummy_mask = false;
 
     tinfo_t& type() const { return underlying_expr->type; }
     explicit operator bool() const { return ptr_expr != nullptr && underlying_expr != nullptr; }
@@ -374,13 +373,13 @@ inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t o
     return access;
 }
 
-inline std::optional<uint64_t> bitfield_access_mask( udm_t& member, uint64_t byte_offset, uint8_t shift_value)
+inline uint64_t bitfield_access_mask( udm_t& member, uint64_t byte_offset, uint8_t shift_value)
 {
     // Prevent an object's member.offset is larger than 64*8
     uint64_t temp_offset = byte_offset * CHAR_BIT;
     if (member.offset < temp_offset)
     {
-        return std::nullopt;
+        return 0;
     }
 
     uint64_t mask = 0;
@@ -389,21 +388,21 @@ inline std::optional<uint64_t> bitfield_access_mask( udm_t& member, uint64_t byt
         mask |= ( 1ull << (i - temp_offset) );
     }
 
-    return mask << shift_value;
+    return mask;
 }
 
 // executes callback for each member in `type` where its offset coincides with `and_mask`.
 // `cmp_mask` is used to calculate enabled bits in the bitfield.
 template<class Callback>
-bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, const std::pair<bool, uint64_t> &and_mask_pair, uint64_t byte_offset = 0 , uint8_t shift_value = 0 )
+bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, uint64_t and_mask, uint64_t byte_offset = 0 , uint8_t shift_value = 0 )
 {
     if ( type.is_ptr() )
     {
         type = type.get_ptrarr_object();
     }
 
-    auto [is_dummy_mask, and_mask] = and_mask_pair;
-    LOG_D("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(), and_mask, byte_offset, shift_value);
+    LOG_D("type=%s, cast_size=%d, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(),
+        cast_size, and_mask, byte_offset, shift_value);
 
     static std::map<int, uint64_t> mask_map = {{1, 0xFF}, {2, 0xFFFF}, {4, 0xFFFF'FFFF}, {8, 0xFFFF'FFFF'FFFF'FFFF}};
     if (mask_map.count(cast_size) == 0)
@@ -442,14 +441,13 @@ bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, const std::pai
         LOG_I("    @@ find member, type=%s, member=%s, member_offset=%d, size=%d", print_type_name(type).c_str(),
             member.name.c_str(), member.offset, member.size);
 
-        auto field_mask_wrap = bitfield_access_mask( member, byte_offset, shift_value );
-        if (!field_mask_wrap)
+        uint64_t mask = bitfield_access_mask( member, byte_offset, shift_value ); // delete shfit_value
+        if (mask == 0)
         {
-            LOG_D("  member_offset=%d is less than byte_offset*8=%d", member.offset, byte_offset * 8);
+            LOG_E("  failed to get field offset, member_offset=%d, byte_offset=%d", member.offset, byte_offset);
             return false;
         }
 
-        uint64_t mask = field_mask_wrap.value();
         if ( member.size != 1 && ( real_and_mask & mask ) != mask )
         {
             LOG_W( "[bitfields] bad offset (%u) and size (%u) mask (0x%X) combo of a field for given mask (0x%X)\n",
@@ -469,7 +467,7 @@ bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, const std::pai
     }
 
     // Fix the case that all_member_mask=0x04 but real_and_mask=0x07
-    if (!is_dummy_mask && all_member_mask != real_and_mask)
+    if (all_member_mask != real_and_mask)
     {
         LOG_I("  give up replacing field due to different mask 0x%llX and 0x%llX", all_member_mask, real_and_mask);
         return false;
@@ -481,7 +479,7 @@ bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, const std::pai
 template<class Callback>
 bool for_each_bitfield(const access_info &info, Callback cb)
 {
-    return for_each_bitfield(cb, info.underlying_expr->type, info.ptr_expr->ptrsize, {info.is_dummy_mask, info.mask}, info.byte_offset, info.shift_value);
+    return for_each_bitfield(cb, info.underlying_expr->type, info.ptr_expr->ptrsize, info.mask, info.byte_offset, info.shift_value);
 }
 
 // handles various cases of potential bitfield access.
@@ -607,7 +605,6 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
             const auto type_size_bits = expr->type.get_size() * CHAR_BIT;
             res.mask = (1ull << type_size_bits) - 1;
             res.shift_value = ( uint8_t ) shiftnum->n->_value;
-            res.is_dummy_mask = true;
         }
         else
         {
@@ -947,7 +944,7 @@ inline void handle_or_assignment( cexpr_t* expr )
                 helper->helper = alloc_cstr( member.name.c_str() );
 
                 merge_accesses( replacement, helper, cot_bor, info.ea, type );
-            }, info.underlying_expr->type, info.ptr_expr->ptrsize, {false, mask}, info.byte_offset );
+            }, info.underlying_expr->type, info.ptr_expr->ptrsize, mask, info.byte_offset );
 
         replace_or_delete( &num, replacement, success );
     }
@@ -960,7 +957,7 @@ inline void handle_or_assignment( cexpr_t* expr )
             [ & ] ( udm_t& member )
             {
                 fields.push_back( alloc_cstr( member.name.c_str() ) );
-            }, info.underlying_expr->type, info.ptr_expr->ptrsize, {false, mask}, info.byte_offset );
+            }, info.underlying_expr->type, info.ptr_expr->ptrsize, mask, info.byte_offset );
 
             if ( !success )
             {
@@ -1099,7 +1096,7 @@ inline void handle_call( cexpr_t* expr )
             helper->helper = alloc_cstr( member.name.c_str() );
 
             merge_accesses( replacement, helper, cot_bor, arg1.ea, arg1.type );
-        }, arg0->type, sizeof(uint64_t), {false, mask} ); // TODO
+        }, arg0->type, sizeof(uint64_t), mask ); // TODO
 
     replace_or_delete( &arg1, replacement, success );
 }
