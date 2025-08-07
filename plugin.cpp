@@ -397,28 +397,28 @@ inline std::optional<uint64_t> bitfield_access_mask( udm_t& member, uint64_t byt
 template<class Callback>
 bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, const std::pair<bool, uint64_t> &and_mask_pair, uint64_t byte_offset = 0 , uint8_t shift_value = 0 )
 {
-    auto [is_dummy_mask, and_mask] = and_mask_pair;
-    LOG_D("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(), and_mask, byte_offset, shift_value);
-
     if ( type.is_ptr() )
     {
         type = type.get_ptrarr_object();
     }
 
-    static std::set<int> cast_size_set{1, 2, 4, 8};
-    if (cast_size_set.count(cast_size) == 0)
+    auto [is_dummy_mask, and_mask] = and_mask_pair;
+    LOG_D("type=%s, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(), and_mask, byte_offset, shift_value);
+
+    static std::map<int, uint64_t> mask_map = {{1, 0xFF}, {2, 0xFFFF}, {4, 0xFFFF'FFFF}, {8, 0xFFFF'FFFF'FFFF'FFFF}};
+    if (mask_map.count(cast_size) == 0)
     {
-        LOG_E("  cast_size=%d is error. type=%s", cast_size, print_type_name(type).c_str());
+        LOG_E("  cast_size=%d is unsupported", cast_size);
         return false;
     }
-
-    udm_t member;
-    // e.g.( *((char *)p + 6) >> 5) & 0x03
-    uint64_t real_and_mask = (and_mask << shift_value) & ((1ull << (cast_size * CHAR_BIT)) - 1);
+    // e.g.( *((_BYTE *)p + 6) >> 5) & 0x03
+    // e.g.( *((_QWORD *)p + 6) & 0xFF
+    uint64_t real_and_mask = (and_mask << shift_value) & mask_map.at(cast_size);
     uint64_t all_member_mask = 0;
 
     LOG_T("  real_and_mask=0x%llX, and_mask=0x%llX, shift_value=%d", real_and_mask, and_mask, shift_value);
 
+    udm_t member;
     for ( uint8_t i = 0; i < 64; ++i )
     {
         if ( !( real_and_mask & ( 1ull << i ) ) )
