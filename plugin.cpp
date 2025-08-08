@@ -1,7 +1,7 @@
 #include <optional>
 #include <hexsuite.hpp>
 
-#define PLUGIN_VERSION "0.0.7"
+#define PLUGIN_VERSION "0.0.8"
 #define BUILD_TIME __DATE__ " " __TIME__
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
@@ -234,8 +234,9 @@ struct access_info
     qstring to_string() const
     {
         qstring result;
-        result.sprnt("access_info: expr=%s, mask=0x%llX, ea=0x%llX, byte_offset=%llu, shift_value=%u",
-                     expr_to_string(underlying_expr).c_str(), mask, ea, byte_offset, shift_value);
+        result.sprnt("access_info: expr=%s, mask=0x%llX, ea=0x%llX, byte_offset=%llu, shift_value=%u, type=%s",
+                     expr_to_string(underlying_expr).c_str(), mask, ea, byte_offset, shift_value,
+                     print_type_name(type()).c_str());
         return result;
     }
 };
@@ -316,7 +317,7 @@ inline void select_first_union_field( cexpr_t*& expr )
     }
 }
 
-inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t original_ea, tinfo_t& common_type )
+inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t original_ea, const tinfo_t& common_type )
 {
     LOG_D("%s, member=%s, common_type=%s", info.to_string().c_str(), member.name.c_str(), print_type_name(common_type).c_str());
 
@@ -324,17 +325,8 @@ inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t o
     data.flags = FTI_PURE;
     data.rettype = member.size == 1 ? tinfo_t{ BTF_BOOL } : common_type;
     data.cc = CM_CC_UNKNOWN;
-
-    {
-        funcarg_t new_arg1;
-        new_arg1.type = info.underlying_expr->type;
-        funcarg_t new_arg2;
-        new_arg2.type = common_type;
-        data.push_back(new_arg1);
-        data.push_back(new_arg2);
-    // data.push_back( funcarg_t{ "", info.underlying_expr->type } );
-    // data.push_back( funcarg_t{ "", common_type } );
-    }
+    data.push_back( funcarg_t{ .type = info.underlying_expr->type } );
+    data.push_back( funcarg_t{ .type = common_type } );
 
     tinfo_t functype;
     if ( !functype.create_func( data ) )
@@ -369,7 +361,7 @@ inline cexpr_t* create_bitfield_access( access_info& info, udm_t& member, ea_t o
 
     // construct the call / access itself
     auto access = new cexpr_t( cot_call, call_fn );
-    access->type = member.size == 1 ? tinfo_t{ BTF_BOOL } : common_type;
+    access->type = member.size == 1 ? tinfo_t{ BTF_BOOL } : common_type; // important!!!!!
     access->exflags = 0;
     access->a = call_args;
     access->ea = original_ea;
@@ -403,12 +395,6 @@ bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, uint64_t and_m
     if ( type.is_ptr() )
     {
         type = type.get_ptrarr_object();
-    }
-
-    if (cast_size == 4) // TODO
-    {
-        LOG_E("  fallback for cast_size %d", cast_size);
-        return false;
     }
 
     LOG_D("type=%s, cast_size=%d, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(),
@@ -814,11 +800,11 @@ inline void handle_value_expr( cexpr_t* access )
 
     cexpr_t* replacement = nullptr;
     auto success = for_each_bitfield(info,
-        [ & ] ( udm_t& member )
+        [ &, ret_type = access->type ] ( udm_t& member )
         {
             // TODO: for assignment where more than 1 field is being accessed create a new bitfield type for the result
             // that would contain the correctly masked and shifted fields
-            const auto access = create_bitfield_access( info, member, info.ea, info.type() );
+            const auto access = create_bitfield_access( info, member, info.ea, ret_type );
             merge_accesses( replacement, access, cot_bor, info.ea, info.type() );
         });
 
