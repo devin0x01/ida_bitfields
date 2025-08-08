@@ -1,7 +1,7 @@
 #include <optional>
 #include <hexsuite.hpp>
 
-#define PLUGIN_VERSION "0.0.6"
+#define PLUGIN_VERSION "0.0.7"
 #define BUILD_TIME __DATE__ " " __TIME__
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
@@ -23,6 +23,10 @@
     #pragma message("================== build in release mode")
     #define CURRENT_LOG_LEVEL LOG_LEVEL_INFO
 #endif
+
+#pragma message("PLUGIN_VERSION = " PLUGIN_VERSION)
+#pragma message("GIT_COMMIT_ID  = " GIT_COMMIT_ID)
+
 
 // 日志级别标签
 #define LOG_LEVEL_NAME(level) \
@@ -399,6 +403,12 @@ bool for_each_bitfield( Callback cb, tinfo_t type, int cast_size, uint64_t and_m
     if ( type.is_ptr() )
     {
         type = type.get_ptrarr_object();
+    }
+
+    if (cast_size == 4) // TODO
+    {
+        LOG_E("  fallback for cast_size %d", cast_size);
+        return false;
     }
 
     LOG_D("type=%s, cast_size=%d, and_mask=0x%X, byte_offset=%d, shift_value=%d", print_type_name(type).c_str(),
