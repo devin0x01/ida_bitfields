@@ -586,17 +586,17 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
         }
         // handle upper bit access that's transformed to a sign bit comparison.
         // e.g. `x < 0`
-        else if ( expr->op == cot_slt )
-        {
-            auto num = expr->find_num_op();
-            if ( !num || num->n->_value != 0 )
-                return res;
+        // else if ( expr->op == cot_slt )
+        // {
+        //     auto num = expr->find_num_op();
+        //     if ( !num || num->n->_value != 0 )
+        //         return res;
 
-            expr = expr->theother( num );
-            res.mask = 1ull << ( ( expr->type.get_size() * CHAR_BIT ) - 1 );
-            res.shift_value = 0;
-        }
-        else if (expr->op == cot_ushr)
+        //     expr = expr->theother( num );
+        //     res.mask = 1ull << ( ( expr->type.get_size() * CHAR_BIT ) - 1 );
+        //     res.shift_value = 0;
+        // }
+        else if (expr->op == cot_ushr || expr->op == cot_sshr)
         {
             // handle right shift of a pointer dereference
             // e.g. `*((type *)var + 8) >> 6`
