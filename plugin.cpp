@@ -1,7 +1,6 @@
-#include <optional>
 #include <hexsuite.hpp>
 
-#define PLUGIN_VERSION "0.0.8"
+#define PLUGIN_VERSION "0.0.9"
 #define BUILD_TIME __DATE__ " " __TIME__
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
@@ -138,6 +137,25 @@ qstring expr_to_string(const cexpr_t* expr)
             result.sprnt("(%s != %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
             break;
 
+        case cot_ult:
+        case cot_slt:
+            result.sprnt("(%s < %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
+            break;
+
+        case cot_ule:
+        case cot_sle:
+            result.sprnt("(%s <= %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
+            break;
+
+        case cot_ugt:
+        case cot_sgt:
+            result.sprnt("(%s > %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
+            break;
+
+        case cot_uge:
+        case cot_sge:
+            result.sprnt("(%s >= %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
+            break;
 
         case cot_band:
             result.sprnt("(%s & %s)", expr_to_string(expr->x).c_str(), expr_to_string(expr->y).c_str());
@@ -520,7 +538,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
                 return res;
             }
 
-            if (expr->op == cot_ushr)
+            if (expr->op == cot_ushr || expr->op == cot_sshr)
             {
                 auto shiftnum = expr->find_num_op();
                 if ( !shiftnum )
@@ -626,6 +644,7 @@ inline access_info unwrap_access( cexpr_t* expr, bool is_assignee = false )
 
     if ( !expr || expr->op != cot_ptr ) // *ptr
     {
+        LOG_T("  sub_expr op is %s", (expr ? get_ctype_name(expr->op) : "null"));
         return res;
     }
 
@@ -718,7 +737,9 @@ inline void handle_equality( cexpr_t* expr )
     if ( eq_num->op != cot_num )
         return;
 
-    LOG_D("  eq=%s, eq_num=%s", expr_to_string(eq).c_str(), expr_to_string(eq_num).c_str());
+    LOG_D("  eq=%s, type=%s, eq_num=%s, type=%s", expr_to_string(eq).c_str(), print_type_name(eq->type).c_str(),
+        expr_to_string(eq_num).c_str(), print_type_name(eq_num->type).c_str());
+
     auto info = unwrap_access( eq );
     if ( !info )
         return;
@@ -730,15 +751,19 @@ inline void handle_equality( cexpr_t* expr )
         [ &, eq_num = eq_num ] ( udm_t& member )
         {
             // construct the call / access itself
-            auto access = create_bitfield_access( info, member, expr->ea, eq_num->type );
+            auto access = create_bitfield_access( info, member, expr->ea, eq->type );
             if ( !access )
                 return;
 
-            // e.g., ((status & 0x18) >> 2) == 2
-            // mask = 0x18, shift_value = 2, member.offset = 3
-            // value = ((2 << 2) & 0x18) >> 3 = 1
-            // convert to ==> b(status, member) == 1
-            // const auto mask = bitfield_access_mask( member );
+            // e.g., ((status >> 2) & 0x06) == 2
+            // mask = 0x06, shift_value = 2, member.offset = 3, member.width = 2
+            // value = (((2 & 0x18) << 2) >> 3 = 1
+            //     convert to ==> b(status, member) == 1
+            // 
+            // e.g., *((char *)p + 2) & 0xE0 != 0x40
+            // mask = 0xE0, shift_value = 0, member.offset = 2.5=21, member.width = 3
+            // value = ((0x40 & 0xE0) >> 5) == 2
+            //     convert to ==> b(p, member) != 2
             int byte_offset = info.byte_offset;
             int field_offset = (member.offset - byte_offset * CHAR_BIT);
             if (field_offset < 0)
@@ -1122,8 +1147,12 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                     return 0;
                 }
 
-                bool matched =  expr->op == cot_eq || expr->op == cot_ne || expr->op == cot_call ||
-                    expr->op == cot_asg || expr->op == cot_asgadd || expr->op == cot_asgsub;
+                bool is_eq_op = expr->op == cot_eq || expr->op == cot_ne;
+                bool is_cmp_op = expr->op == cot_slt || expr->op == cot_sle || expr->op == cot_sgt || expr->op == cot_sge ||
+                                 expr->op == cot_ult || expr->op == cot_ule || expr->op == cot_ugt || expr->op == cot_uge;
+                bool is_asg_op = expr->op == cot_asg || expr->op == cot_asgadd || expr->op == cot_asgsub;
+                        
+                bool matched =  is_eq_op || is_cmp_op || expr->op == cot_call || is_asg_op;
                 if (!matched)
                 {
                     return 0;
@@ -1131,13 +1160,13 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
 
                 LOG_D("------------------ %s, ea=0x%llX, %s ------------------", get_ctype_name(expr->op), expr->ea, expr_to_string(expr).c_str());
 
-                if ( expr->op == cot_eq || expr->op == cot_ne ) // equal or not-equal
+                if (is_eq_op) // equal or not-equal
                 {
                     handle_equality(expr);
                 }
-                else if ( expr->op == cot_slt ) // signed less than
+                else if (is_cmp_op)
                 {
-                    // handle_value_expr( expr );
+                    handle_equality(expr);
                 }
                 else if ( expr->op == cot_call ) // call a function
                 {
@@ -1151,7 +1180,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                         }
                     }
                 }
-                else if ( expr->op == cot_asg || expr->op == cot_asgadd || expr->op == cot_asgsub)
+                else if (is_asg_op)
                 {
                     // case1: int buf += (...) << shift;
                     // case2: int buf += (...) >> (10 - offset);
@@ -1160,7 +1189,7 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                     {
                         if (expr->y->op == cot_shl) // case1
                         {
-                            handle_left_shifted_expr(expr->y);
+                            handle_left_shifted_expr(expr->y); // e.g. *v334 += ((*((_BYTE *)net + 33) >> 2) & 3) << v52
                             break;
                         }
 
@@ -1191,10 +1220,6 @@ inline auto bitfields_optimizer = hex::hexrays_callback_for<hxe_maturity>(
                 else if ( expr->op == cot_asgbor ) // assign with bitwise-OR: x |= y
                 {
                     // handle_or_assignment( expr );
-                }
-                else if (expr->op == cot_shl) // e.g. *v334 += ((*((_BYTE *)net + 33) >> 2) & 3) << v52
-                {
-                    // handle_left_shifted_expr(expr);
                 }
 
                 return 0;
