@@ -11,6 +11,9 @@ add_library(bitfields SHARED ${CMAKE_CURRENT_SOURCE_DIR}/plugin.cpp)
 
 target_compile_features(bitfields PRIVATE cxx_std_20)
 
+#$ echo $IDA_PATH
+#C:\Program Files\IDA\IDA Professional 9.0\
+
 if (DEFINED ENV{IDA_PATH})
     set(IDA_PATH $ENV{IDA_PATH})
 elseif (DEFINED ENV{IDA_DIR})
