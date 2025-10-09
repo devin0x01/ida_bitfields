@@ -1,6 +1,6 @@
 #include <hexsuite.hpp>
 
-#define PLUGIN_VERSION "0.0.9"
+#define PLUGIN_VERSION "0.0.10"
 #define BUILD_TIME __DATE__ " " __TIME__
 #ifndef GIT_COMMIT_ID
     #define GIT_COMMIT_ID "unknown"
@@ -127,6 +127,10 @@ qstring expr_to_string(const cexpr_t* expr)
                     member_name = member.name.c_str();
                 result.sprnt("%s->%s", expr_to_string(expr->x).c_str(), member_name.c_str());
             }
+            break;
+
+        case cot_lnot:
+            result.sprnt("!%s", expr_to_string(expr->x).c_str());
             break;
 
         case cot_eq:
@@ -813,7 +817,7 @@ inline void handle_value_expr( cexpr_t* access )
         return;
     }
 
-    LOG_D("origin expr: %s", expr_to_string(access).c_str());
+    LOG_D("origin expr: %s, type=%s", expr_to_string(access).c_str(), print_type_name(access->type).c_str());
     auto info = unwrap_access( access );
     if ( !info )
     {
@@ -830,7 +834,7 @@ inline void handle_value_expr( cexpr_t* access )
             // TODO: for assignment where more than 1 field is being accessed create a new bitfield type for the result
             // that would contain the correctly masked and shifted fields
             const auto access = create_bitfield_access( info, member, info.ea, ret_type );
-            merge_accesses( replacement, access, cot_bor, info.ea, info.type() );
+            merge_accesses( replacement, access, cot_bor, info.ea, access->type );
         });
 
     replace_or_delete( access, replacement, success );
